@@ -1,0 +1,51 @@
+# Deploys to the Oracle Cloud VM on every push to the production branch.
+# Needs the repository secret DEPLOY_SSH_KEY (private key allowed in the VM's ~/.ssh/authorized_keys).
+name: Deploy
+
+on:
+  push:
+    branches: [claude/intelligent-ride-621ios]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  VM_HOST: 204.216.138.220
+  VM_USER: ubuntu
+  VM_HOST_KEY: 204.216.138.220 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIdC3g4fMle8FI/ukyqe4YOq8WZ69MU+8XCziLjbgYQE
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # The first build of the Rust crates on the 1 GB VM takes ~30 min.
+    timeout-minutes: 60
+    steps:
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "$VM_HOST_KEY" > ~/.ssh/known_hosts
+
+      - name: Pull, rebuild and restart
+        run: |
+          ssh -i ~/.ssh/deploy_key -o ServerAliveInterval=30 "$VM_USER@$VM_HOST" "
+            set -e
+            cd ~/easy-pay
+            git fetch origin ${{ github.ref_name }}
+            git checkout ${{ github.ref_name }}
+            git merge --ff-only origin/${{ github.ref_name }}
+            sudo docker compose -f docker-compose.prod.yml up -d --build
+            sudo docker image prune -f
+            sudo docker compose -f docker-compose.prod.yml ps
+          "
+
+      - name: Check the site responds
+        run: |
+          for i in $(seq 1 12); do
+            curl -fsS -o /dev/null --max-time 10 "https://204-216-138-220.sslip.io" && echo "Site is up" && exit 0
+            sleep 5
+          done
+          echo "Site did not respond with 2xx after deploy" && exit 1
