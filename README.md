@@ -17,26 +17,56 @@ Mobile-first web app for small sellers: describe the sale in a chat (text or voi
 
 | | |
 |---|---|
-| Backend | Rust · axum · SQLite (rusqlite) · reqwest → OpenRouter |
+| Backend | Rust · axum · PostgreSQL (sqlx) · reqwest → OpenRouter |
 | Frontend | React · Vite · TypeScript · Tailwind · lucide-react |
 
-## Run
+## Run locally
 
 ```bash
-# backend (http://localhost:8080)
+# 1. Postgres (or point DATABASE_URL to any Postgres)
+docker compose up -d
+
+# 2. backend (http://localhost:8080) — creates the tables on start
 cd backend
 cp .env.example .env        # add OPENROUTER_API_KEY
 cargo run
 
-# frontend dev (http://localhost:5173, proxies /api → 8080)
+# 3. frontend dev (http://localhost:5173, proxies /api → 8080)
 cd frontend
 npm install
 npm run dev
 ```
 
-Production: `npm run build` in `frontend/`, then `cargo run --release` serves `frontend/dist` and the API on the same port.
-
 Without `OPENROUTER_API_KEY` the backend uses a simple offline parser and voice falls back to the browser's speech recognition (Chrome/Safari).
+
+Tests: `cargo test`. Database tests run only when `TEST_DATABASE_URL` points to a Postgres.
+
+## Deploy to Heroku
+
+Heroku builds the root `Dockerfile` (frontend + backend in one image) via `heroku.yml`.
+The app creates its tables on start, binds to `$PORT` and reads Heroku's `DATABASE_URL` (TLS on).
+
+**Option A — button** (uses `app.json`: Basic dyno + Postgres Essential-0):
+
+[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/chicogborba/easy-pay)
+
+> The button deploys the repo's default branch — merge this branch first.
+
+**Option B — CLI:**
+
+```bash
+heroku login
+heroku create my-easy-pay --stack container
+heroku addons:create heroku-postgresql:essential-0
+heroku config:set OPENROUTER_API_KEY=sk-or-...
+git push heroku claude/intelligent-ride-621ios:main   # or main, once merged
+heroku open
+heroku logs --tail                                     # if something goes wrong
+```
+
+Notes:
+- GitHub Student Pack credits cover a Basic dyno + Essential-0 Postgres. Eco dynos also work but sleep after 30 min idle (first request is slow).
+- HTTPS comes for free on `*.herokuapp.com`, so the microphone works on phones.
 
 ## Voice
 

@@ -2,8 +2,6 @@ mod ai;
 mod db;
 mod models;
 
-use std::sync::{Arc, Mutex};
-
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
@@ -11,7 +9,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use rusqlite::Connection;
+use sqlx::PgPool;
 use serde_json::json;
 use tower_http::{
     cors::CorsLayer,
@@ -23,7 +21,7 @@ use models::*;
 
 #[derive(Clone)]
 struct AppState {
-    db: Arc<Mutex<Connection>>,
+    db: PgPool,
     ai: ai::Ai,
 }
 
@@ -67,9 +65,10 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "easy-pay.db".into());
+    let db_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/easypay".into());
     let state = AppState {
-        db: Arc::new(Mutex::new(db::open(&db_path)?)),
+        db: db::connect(&db_url).await?,
         ai: ai::Ai::from_env(),
     };
     if !state.ai.enabled() {
@@ -103,7 +102,10 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
+    // Heroku (and most hosts) tell us the port through $PORT.
+    let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| {
+        format!("0.0.0.0:{}", std::env::var("PORT").unwrap_or_else(|_| "8080".into()))
+    });
     tracing::info!("listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
@@ -124,7 +126,7 @@ async fn chat(
     }
     // The merchant's known products let the AI group synonyms and reuse usual prices.
     let catalog = match merchant_id(&headers) {
-        Ok(m) => db::catalog(&s.db.lock().unwrap(), &m)?,
+        Ok(m) => db::catalog(&s.db, &m).await?,
         Err(_) => Vec::new(),
     };
     Ok(Json(s.ai.chat(&req.messages, &req.lang, &req.currency, &catalog).await))
@@ -149,28 +151,28 @@ async fn create_link(
         .sanitize()
         .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "no items".into()))?;
     let business: String = req.business_name.chars().take(60).collect();
-    let db = s.db.lock().unwrap();
-    Ok(Json(db::create_link(&db, &merchant, &business, &draft)?))
+    let db = &s.db;
+    Ok(Json(db::create_link(db, &merchant, &business, &draft).await?))
 }
 
 async fn list_links(State(s): State<AppState>, headers: HeaderMap) -> ApiResult<Vec<Link>> {
     let merchant = merchant_id(&headers)?;
-    let db = s.db.lock().unwrap();
-    Ok(Json(db::list_links(&db, &merchant)?))
+    let db = &s.db;
+    Ok(Json(db::list_links(db, &merchant).await?))
 }
 
 async fn get_link(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<Link> {
-    let db = s.db.lock().unwrap();
-    db::get_link(&db, &id)?.map(Json).ok_or_else(not_found)
+    let db = &s.db;
+    db::get_link(db, &id).await?.map(Json).ok_or_else(not_found)
 }
 
 async fn cancel_link(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult<Link> {
     let merchant = merchant_id(&headers)?;
-    let db = s.db.lock().unwrap();
-    if !db::cancel_link(&db, &merchant, &id)? {
+    let db = &s.db;
+    if !db::cancel_link(db, &merchant, &id).await? {
         return Err(ApiError(StatusCode::CONFLICT, "cannot cancel".into()));
     }
-    db::get_link(&db, &id)?.map(Json).ok_or_else(not_found)
+    db::get_link(db, &id).await?.map(Json).ok_or_else(not_found)
 }
 
 /// MOCK payment. Replace with Stripe (Payment Element / Checkout) later.
@@ -185,20 +187,23 @@ async fn pay_link(
     };
     // Simulate the processor taking a moment.
     tokio::time::sleep(std::time::Duration::from_millis(900)).await;
-    let db = s.db.lock().unwrap();
-    let link = db::get_link(&db, &id)?.ok_or_else(not_found)?;
+    let db = &s.db;
+    let link = db::get_link(db, &id).await?.ok_or_else(not_found)?;
     if link.status != "waiting" {
         return Err(ApiError(StatusCode::CONFLICT, link.status));
     }
-    db::pay_link(&db, &id, &method)?;
-    db::get_link(&db, &id)?.map(Json).ok_or_else(not_found)
+    // The UPDATE only matches a waiting link, so two payments can't both succeed.
+    if !db::pay_link(db, &id, &method).await? {
+        return Err(ApiError(StatusCode::CONFLICT, "paid".into()));
+    }
+    db::get_link(db, &id).await?.map(Json).ok_or_else(not_found)
 }
 
 async fn stats(State(s): State<AppState>, headers: HeaderMap, Query(q): Query<StatsQuery>) -> ApiResult<Stats> {
     let merchant = merchant_id(&headers)?;
     let currency = q.currency.unwrap_or_else(|| "USD".into()).to_uppercase();
-    let db = s.db.lock().unwrap();
-    Ok(Json(db::stats(&db, &merchant, &currency, q.tz_offset.unwrap_or(0))?))
+    let db = &s.db;
+    Ok(Json(db::stats(db, &merchant, &currency, q.tz_offset.unwrap_or(0)).await?))
 }
 
 async fn list_products(
@@ -208,8 +213,8 @@ async fn list_products(
 ) -> ApiResult<Vec<ProductSummary>> {
     let merchant = merchant_id(&headers)?;
     let currency = q.currency.unwrap_or_else(|| "USD".into()).to_uppercase();
-    let db = s.db.lock().unwrap();
-    Ok(Json(db::products(&db, &merchant, &currency, q.tz_offset.unwrap_or(0), q.days)?))
+    let db = &s.db;
+    Ok(Json(db::products(db, &merchant, &currency, q.tz_offset.unwrap_or(0), q.days).await?))
 }
 
 async fn get_product(
@@ -220,8 +225,8 @@ async fn get_product(
 ) -> ApiResult<ProductDetail> {
     let merchant = merchant_id(&headers)?;
     let currency = q.currency.unwrap_or_else(|| "USD".into()).to_uppercase();
-    let db = s.db.lock().unwrap();
-    db::product_detail(&db, &merchant, id, &currency, q.tz_offset.unwrap_or(0))?
+    let db = &s.db;
+    db::product_detail(db, &merchant, id, &currency, q.tz_offset.unwrap_or(0)).await?
         .map(Json)
         .ok_or_else(not_found)
 }
@@ -237,8 +242,8 @@ async fn rename_product(
     if name.is_empty() {
         return Err(ApiError(StatusCode::BAD_REQUEST, "empty name".into()));
     }
-    let db = s.db.lock().unwrap();
-    if !db::rename_product(&db, &merchant, id, &name)? {
+    let db = &s.db;
+    if !db::rename_product(db, &merchant, id, &name).await? {
         return Err(not_found());
     }
     Ok(Json(json!({ "ok": true })))
@@ -251,8 +256,8 @@ async fn merge_product(
     Json(req): Json<MergeRequest>,
 ) -> ApiResult<serde_json::Value> {
     let merchant = merchant_id(&headers)?;
-    let db = s.db.lock().unwrap();
-    if !db::merge_products(&db, &merchant, id, req.into_id)? {
+    let db = &s.db;
+    if !db::merge_products(db, &merchant, id, req.into_id).await? {
         return Err(ApiError(StatusCode::BAD_REQUEST, "cannot merge".into()));
     }
     Ok(Json(json!({ "ok": true })))
@@ -270,9 +275,9 @@ async fn insights(
     }
     let currency = req.currency.to_uppercase();
     let data = {
-        let db = s.db.lock().unwrap();
-        let st = db::stats(&db, &merchant, &currency, req.tz_offset)?;
-        let products: Vec<_> = db::products(&db, &merchant, &currency, req.tz_offset, Some(30))?
+        let db = &s.db;
+        let st = db::stats(db, &merchant, &currency, req.tz_offset).await?;
+        let products: Vec<_> = db::products(db, &merchant, &currency, req.tz_offset, Some(30)).await?
             .into_iter()
             .filter(|p| p.quantity > 0)
             .take(10)

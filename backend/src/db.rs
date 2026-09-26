@@ -2,52 +2,69 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use rand::{distributions::Alphanumeric, Rng};
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use sqlx::{
+    postgres::{PgConnectOptions, PgPoolOptions, PgRow, PgSslMode},
+    PgConnection, PgPool, Row,
+};
 
 use crate::models::{
     CatalogEntry, DayTotal, Draft, Item, Link, ProductDay, ProductDetail, ProductSummary, Stats, TopItem,
 };
 
-pub fn open(path: &str) -> Result<Connection> {
-    let conn = Connection::open(path)?;
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         CREATE TABLE IF NOT EXISTS links (
+/// Connects to Postgres. Remote databases (Heroku) require TLS; local ones don't.
+pub async fn connect(url: &str) -> Result<PgPool> {
+    let mut opts: PgConnectOptions = url.parse()?;
+    let local = ["localhost", "127.0.0.1", "::1"].contains(&opts.get_host()) || opts.get_host().starts_with('/');
+    if !local && !url.contains("sslmode=") {
+        // Heroku Postgres uses self-signed certs: encrypt without verifying.
+        opts = opts.ssl_mode(PgSslMode::Require);
+    }
+    let max: u32 = std::env::var("DATABASE_POOL_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
+    let pool = PgPoolOptions::new().max_connections(max).connect_with(opts).await?;
+    migrate(&pool).await?;
+    Ok(pool)
+}
+
+/// Idempotent schema setup, run on every start.
+pub async fn migrate(pool: &PgPool) -> Result<()> {
+    for stmt in [
+        "CREATE TABLE IF NOT EXISTS links (
              id            TEXT PRIMARY KEY,
              merchant_id   TEXT NOT NULL,
              business_name TEXT NOT NULL DEFAULT '',
+             customer      TEXT NOT NULL DEFAULT '',
              items_json    TEXT NOT NULL,
              currency      TEXT NOT NULL,
-             total_cents   INTEGER NOT NULL,
+             total_cents   BIGINT NOT NULL,
              note          TEXT NOT NULL DEFAULT '',
              status        TEXT NOT NULL DEFAULT 'waiting',
-             created_at    INTEGER NOT NULL,
-             paid_at       INTEGER,
+             created_at    BIGINT NOT NULL,
+             paid_at       BIGINT,
              paid_method   TEXT
-         );
-         CREATE INDEX IF NOT EXISTS idx_links_merchant ON links(merchant_id, created_at DESC);
-
-         -- Products the merchant sells, learned automatically from their links.
-         CREATE TABLE IF NOT EXISTS products (
-             id              INTEGER PRIMARY KEY AUTOINCREMENT,
+         )",
+        "CREATE INDEX IF NOT EXISTS idx_links_merchant ON links(merchant_id, created_at DESC)",
+        // Products the merchant sells, learned automatically from their links.
+        "CREATE TABLE IF NOT EXISTS products (
+             id              BIGSERIAL PRIMARY KEY,
              merchant_id     TEXT NOT NULL,
              name            TEXT NOT NULL,
-             last_unit_cents INTEGER NOT NULL DEFAULT 0,
+             last_unit_cents BIGINT NOT NULL DEFAULT 0,
              last_currency   TEXT NOT NULL DEFAULT '',
-             created_at      INTEGER NOT NULL
-         );
-         -- Every way the merchant has written a product (normalized), pointing to it.
-         CREATE TABLE IF NOT EXISTS product_aliases (
+             created_at      BIGINT NOT NULL
+         )",
+        "CREATE INDEX IF NOT EXISTS idx_products_merchant ON products(merchant_id)",
+        // Every way the merchant has written a product (normalized), pointing to it.
+        "CREATE TABLE IF NOT EXISTS product_aliases (
              merchant_id TEXT NOT NULL,
              alias_norm  TEXT NOT NULL,
              alias       TEXT NOT NULL,
-             product_id  INTEGER NOT NULL,
+             product_id  BIGINT NOT NULL,
              PRIMARY KEY (merchant_id, alias_norm)
-         );",
-    )?;
-    // Columns added after the first version (ignore "duplicate column" on existing DBs).
-    let _ = conn.execute("ALTER TABLE links ADD COLUMN customer TEXT NOT NULL DEFAULT ''", []);
-    Ok(conn)
+         )",
+    ] {
+        sqlx::query(stmt).execute(pool).await?;
+    }
+    Ok(())
 }
 
 pub fn now_ms() -> i64 {
@@ -89,114 +106,127 @@ pub fn normalize(s: &str) -> String {
 
 const COLS: &str = "id, business_name, items_json, currency, total_cents, note, status, created_at, paid_at, paid_method, customer";
 
-fn row_to_link(r: &Row) -> rusqlite::Result<Link> {
-    let items_json: String = r.get(2)?;
+fn row_to_link(r: &PgRow) -> Result<Link, sqlx::Error> {
+    let items_json: String = r.try_get("items_json")?;
     Ok(Link {
-        id: r.get(0)?,
-        business_name: r.get(1)?,
+        id: r.try_get("id")?,
+        business_name: r.try_get("business_name")?,
         items: serde_json::from_str::<Vec<Item>>(&items_json).unwrap_or_default(),
-        currency: r.get(3)?,
-        total_cents: r.get(4)?,
-        note: r.get(5)?,
-        status: r.get(6)?,
-        created_at: r.get(7)?,
-        paid_at: r.get(8)?,
-        paid_method: r.get(9)?,
-        customer: r.get(10)?,
+        currency: r.try_get("currency")?,
+        total_cents: r.try_get("total_cents")?,
+        note: r.try_get("note")?,
+        status: r.try_get("status")?,
+        created_at: r.try_get("created_at")?,
+        paid_at: r.try_get("paid_at")?,
+        paid_method: r.try_get("paid_method")?,
+        customer: r.try_get("customer")?,
     })
 }
 
-pub fn create_link(conn: &Connection, merchant: &str, business: &str, draft: &Draft) -> Result<Link> {
+pub async fn create_link(pool: &PgPool, merchant: &str, business: &str, draft: &Draft) -> Result<Link> {
+    let mut tx = pool.begin().await?;
     let mut items = draft.items.clone();
     for it in &mut items {
-        let (pid, name) = resolve_product(conn, merchant, it, &draft.currency)?;
+        let (pid, name) = resolve_product(&mut tx, merchant, it, &draft.currency).await?;
         it.product_id = Some(pid);
         it.product = Some(name);
     }
     let id = new_id();
-    conn.execute(
+    sqlx::query(
         "INSERT INTO links (id, merchant_id, business_name, items_json, currency, total_cents, note, created_at, customer)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![
-            id,
-            merchant,
-            business.trim(),
-            serde_json::to_string(&items)?,
-            draft.currency,
-            draft.total_cents(),
-            draft.note,
-            now_ms(),
-            draft.customer,
-        ],
-    )?;
-    Ok(get_link(conn, &id)?.expect("just inserted"))
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    )
+    .bind(&id)
+    .bind(merchant)
+    .bind(business.trim())
+    .bind(serde_json::to_string(&items)?)
+    .bind(&draft.currency)
+    .bind(draft.total_cents())
+    .bind(&draft.note)
+    .bind(now_ms())
+    .bind(&draft.customer)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(get_link(pool, &id).await?.expect("just inserted"))
 }
 
-pub fn get_link(conn: &Connection, id: &str) -> Result<Option<Link>> {
-    Ok(conn
-        .query_row(&format!("SELECT {COLS} FROM links WHERE id = ?1"), [id], row_to_link)
-        .optional()?)
+pub async fn get_link(pool: &PgPool, id: &str) -> Result<Option<Link>> {
+    let row = sqlx::query(&format!("SELECT {COLS} FROM links WHERE id = $1"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.as_ref().map(row_to_link).transpose()?)
 }
 
-pub fn list_links(conn: &Connection, merchant: &str) -> Result<Vec<Link>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {COLS} FROM links WHERE merchant_id = ?1 ORDER BY created_at DESC LIMIT 2000"
-    ))?;
-    let rows = stmt.query_map([merchant], row_to_link)?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+pub async fn list_links(pool: &PgPool, merchant: &str) -> Result<Vec<Link>> {
+    let rows = sqlx::query(&format!(
+        "SELECT {COLS} FROM links WHERE merchant_id = $1 ORDER BY created_at DESC LIMIT 2000"
+    ))
+    .bind(merchant)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().map(row_to_link).collect::<Result<_, _>>()?)
 }
 
 /// Returns false when the link does not belong to the merchant or is not waiting.
-pub fn cancel_link(conn: &Connection, merchant: &str, id: &str) -> Result<bool> {
-    let n = conn.execute(
-        "UPDATE links SET status = 'cancelled' WHERE id = ?1 AND merchant_id = ?2 AND status = 'waiting'",
-        params![id, merchant],
-    )?;
-    Ok(n > 0)
+pub async fn cancel_link(pool: &PgPool, merchant: &str, id: &str) -> Result<bool> {
+    let r = sqlx::query("UPDATE links SET status = 'cancelled' WHERE id = $1 AND merchant_id = $2 AND status = 'waiting'")
+        .bind(id)
+        .bind(merchant)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected() > 0)
 }
 
 /// Mock payment: flips the link to paid.
-pub fn pay_link(conn: &Connection, id: &str, method: &str) -> Result<bool> {
-    let n = conn.execute(
-        "UPDATE links SET status = 'paid', paid_at = ?2, paid_method = ?3 WHERE id = ?1 AND status = 'waiting'",
-        params![id, now_ms(), method],
-    )?;
-    Ok(n > 0)
+pub async fn pay_link(pool: &PgPool, id: &str, method: &str) -> Result<bool> {
+    let r = sqlx::query("UPDATE links SET status = 'paid', paid_at = $2, paid_method = $3 WHERE id = $1 AND status = 'waiting'")
+        .bind(id)
+        .bind(now_ms())
+        .bind(method)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected() > 0)
 }
 
 /* ---------------- products ---------------- */
 
-fn find_alias(conn: &Connection, merchant: &str, text: &str) -> Result<Option<i64>> {
+async fn find_alias(c: &mut PgConnection, merchant: &str, text: &str) -> Result<Option<i64>> {
     let norm = normalize(text);
     if norm.is_empty() {
         return Ok(None);
     }
-    Ok(conn
-        .query_row(
-            "SELECT product_id FROM product_aliases WHERE merchant_id = ?1 AND alias_norm = ?2",
-            params![merchant, norm],
-            |r| r.get(0),
-        )
-        .optional()?)
+    Ok(sqlx::query_scalar("SELECT product_id FROM product_aliases WHERE merchant_id = $1 AND alias_norm = $2")
+        .bind(merchant)
+        .bind(norm)
+        .fetch_optional(c)
+        .await?)
 }
 
-fn add_alias(conn: &Connection, merchant: &str, text: &str, pid: i64) -> Result<()> {
+async fn add_alias(c: &mut PgConnection, merchant: &str, text: &str, pid: i64) -> Result<()> {
     let norm = normalize(text);
     if !norm.is_empty() {
-        conn.execute(
-            "INSERT OR IGNORE INTO product_aliases (merchant_id, alias_norm, alias, product_id) VALUES (?1, ?2, ?3, ?4)",
-            params![merchant, norm, text.trim(), pid],
-        )?;
+        sqlx::query(
+            "INSERT INTO product_aliases (merchant_id, alias_norm, alias, product_id) VALUES ($1, $2, $3, $4)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(merchant)
+        .bind(norm)
+        .bind(text.trim())
+        .bind(pid)
+        .execute(c)
+        .await?;
     }
     Ok(())
 }
 
 /// Finds the product for a receipt line (by the AI's canonical name, then by the
 /// line's own name) or creates it. Remembers the line's wording as an alias.
-fn resolve_product(conn: &Connection, merchant: &str, it: &Item, currency: &str) -> Result<(i64, String)> {
+async fn resolve_product(c: &mut PgConnection, merchant: &str, it: &Item, currency: &str) -> Result<(i64, String)> {
     let mut pid = None;
     for cand in [it.product.as_deref(), Some(it.name.as_str())].into_iter().flatten() {
-        if let Some(p) = find_alias(conn, merchant, cand)? {
+        if let Some(p) = find_alias(c, merchant, cand).await? {
             pid = Some(p);
             break;
         }
@@ -205,97 +235,123 @@ fn resolve_product(conn: &Connection, merchant: &str, it: &Item, currency: &str)
         Some(p) => p,
         None => {
             let name = it.product.clone().unwrap_or_else(|| it.name.clone());
-            conn.execute(
-                "INSERT INTO products (merchant_id, name, created_at) VALUES (?1, ?2, ?3)",
-                params![merchant, name, now_ms()],
-            )?;
-            conn.last_insert_rowid()
+            sqlx::query_scalar("INSERT INTO products (merchant_id, name, created_at) VALUES ($1, $2, $3) RETURNING id")
+                .bind(merchant)
+                .bind(name)
+                .bind(now_ms())
+                .fetch_one(&mut *c)
+                .await?
         }
     };
     if let Some(p) = &it.product {
-        add_alias(conn, merchant, p, pid)?;
+        add_alias(c, merchant, p, pid).await?;
     }
-    add_alias(conn, merchant, &it.name, pid)?;
-    conn.execute(
-        "UPDATE products SET last_unit_cents = ?2, last_currency = ?3 WHERE id = ?1",
-        params![pid, it.total_cents / it.quantity.max(1) as i64, currency],
-    )?;
-    let name = conn.query_row("SELECT name FROM products WHERE id = ?1", [pid], |r| r.get(0))?;
+    add_alias(c, merchant, &it.name, pid).await?;
+    let name = sqlx::query_scalar("UPDATE products SET last_unit_cents = $2, last_currency = $3 WHERE id = $1 RETURNING name")
+        .bind(pid)
+        .bind(it.total_cents / it.quantity.max(1) as i64)
+        .bind(currency)
+        .fetch_one(c)
+        .await?;
     Ok((pid, name))
 }
 
-/// Products the AI should know about, most recently used first.
-pub fn catalog(conn: &Connection, merchant: &str) -> Result<Vec<CatalogEntry>> {
-    let mut stmt = conn.prepare(
-        "SELECT name, last_unit_cents, last_currency FROM products WHERE merchant_id = ?1 ORDER BY id DESC LIMIT 80",
-    )?;
-    let rows = stmt.query_map([merchant], |r| {
-        Ok(CatalogEntry { name: r.get(0)?, unit_cents: r.get(1)?, currency: r.get(2)? })
-    })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+/// Products the AI should know about, most recently created first.
+pub async fn catalog(pool: &PgPool, merchant: &str) -> Result<Vec<CatalogEntry>> {
+    let rows = sqlx::query(
+        "SELECT name, last_unit_cents, last_currency FROM products WHERE merchant_id = $1 ORDER BY id DESC LIMIT 80",
+    )
+    .bind(merchant)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            Ok(CatalogEntry {
+                name: r.try_get("name")?,
+                unit_cents: r.try_get("last_unit_cents")?,
+                currency: r.try_get("last_currency")?,
+            })
+        })
+        .collect::<Result<_, sqlx::Error>>()?)
 }
 
-fn product_names(conn: &Connection, merchant: &str) -> Result<HashMap<i64, String>> {
-    let mut stmt = conn.prepare("SELECT id, name FROM products WHERE merchant_id = ?1")?;
-    let rows = stmt.query_map([merchant], |r| Ok((r.get(0)?, r.get(1)?)))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+async fn product_names(pool: &PgPool, merchant: &str) -> Result<HashMap<i64, String>> {
+    let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id, name FROM products WHERE merchant_id = $1")
+        .bind(merchant)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().collect())
 }
 
-pub fn rename_product(conn: &Connection, merchant: &str, id: i64, name: &str) -> Result<bool> {
-    let name = name.trim();
-    let n = conn.execute(
-        "UPDATE products SET name = ?3 WHERE id = ?1 AND merchant_id = ?2",
-        params![id, merchant, name],
-    )?;
-    if n > 0 {
-        add_alias(conn, merchant, name, id)?;
+pub async fn rename_product(pool: &PgPool, merchant: &str, id: i64, name: &str) -> Result<bool> {
+    let mut tx = pool.begin().await?;
+    let r = sqlx::query("UPDATE products SET name = $3 WHERE id = $1 AND merchant_id = $2")
+        .bind(id)
+        .bind(merchant)
+        .bind(name.trim())
+        .execute(&mut *tx)
+        .await?;
+    if r.rows_affected() > 0 {
+        add_alias(&mut tx, merchant, name, id).await?;
     }
-    Ok(n > 0)
+    tx.commit().await?;
+    Ok(r.rows_affected() > 0)
 }
 
 /// Joins `src` into `dst`: aliases and past sales move over, `src` disappears.
-pub fn merge_products(conn: &Connection, merchant: &str, src: i64, dst: i64) -> Result<bool> {
-    let names = product_names(conn, merchant)?;
+pub async fn merge_products(pool: &PgPool, merchant: &str, src: i64, dst: i64) -> Result<bool> {
+    let names = product_names(pool, merchant).await?;
     let (Some(_), Some(dst_name)) = (names.get(&src), names.get(&dst)) else { return Ok(false) };
     if src == dst {
         return Ok(false);
     }
-    conn.execute(
-        "UPDATE product_aliases SET product_id = ?3 WHERE merchant_id = ?1 AND product_id = ?2",
-        params![merchant, src, dst],
-    )?;
-    conn.execute("DELETE FROM products WHERE id = ?1 AND merchant_id = ?2", params![src, merchant])?;
-    for link in list_links(conn, merchant)? {
-        let mut changed = false;
+    let links = list_links(pool, merchant).await?;
+    let mut tx = pool.begin().await?;
+    sqlx::query("UPDATE product_aliases SET product_id = $3 WHERE merchant_id = $1 AND product_id = $2")
+        .bind(merchant)
+        .bind(src)
+        .bind(dst)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM products WHERE id = $1 AND merchant_id = $2")
+        .bind(src)
+        .bind(merchant)
+        .execute(&mut *tx)
+        .await?;
+    for link in links {
         let mut items = link.items.clone();
-        for it in &mut items {
-            if it.product_id == Some(src) {
-                it.product_id = Some(dst);
-                it.product = Some(dst_name.clone());
-                changed = true;
-            }
+        let mut changed = false;
+        for it in items.iter_mut().filter(|it| it.product_id == Some(src)) {
+            it.product_id = Some(dst);
+            it.product = Some(dst_name.clone());
+            changed = true;
         }
         if changed {
-            conn.execute(
-                "UPDATE links SET items_json = ?2 WHERE id = ?1",
-                params![link.id, serde_json::to_string(&items)?],
-            )?;
+            sqlx::query("UPDATE links SET items_json = $2 WHERE id = $1")
+                .bind(&link.id)
+                .bind(serde_json::to_string(&items)?)
+                .execute(&mut *tx)
+                .await?;
         }
     }
+    tx.commit().await?;
     Ok(true)
 }
 
 /* ---------------- analytics ---------------- */
+// Small merchants have few links, so aggregation happens in memory:
+// simple, and timezone handling stays in one place.
 
 const DAY_MS: i64 = 86_400_000;
 
 /// Paid links in one currency, with their payment time shifted to local time.
-fn paid_local(conn: &Connection, merchant: &str, currency: &str, offset_ms: i64) -> Result<Vec<(i64, Link)>> {
-    Ok(list_links(conn, merchant)?
-        .into_iter()
+fn paid_local(links: &[Link], currency: &str, offset_ms: i64) -> Vec<(i64, Link)> {
+    links
+        .iter()
         .filter(|l| l.status == "paid" && l.currency == currency)
-        .map(|l| (l.paid_at.unwrap_or(l.created_at) + offset_ms, l))
-        .collect())
+        .map(|l| (l.paid_at.unwrap_or(l.created_at) + offset_ms, l.clone()))
+        .collect()
 }
 
 fn today_start(offset_ms: i64) -> i64 {
@@ -331,14 +387,15 @@ impl Agg {
     }
 }
 
-pub fn stats(conn: &Connection, merchant: &str, currency: &str, tz_offset_min: i64) -> Result<Stats> {
+pub async fn stats(pool: &PgPool, merchant: &str, currency: &str, tz_offset_min: i64) -> Result<Stats> {
+    let links = list_links(pool, merchant).await?;
+    let names = product_names(pool, merchant).await?;
     let offset = tz_offset_min * 60_000;
     let today = today_start(offset);
     let week_start = today - 6 * DAY_MS;
     let prev_week_start = week_start - 7 * DAY_MS;
     let month_start = today - 29 * DAY_MS;
     let weekdays_start = today - 55 * DAY_MS;
-    let names = product_names(conn, merchant)?;
 
     let mut s = Stats {
         currency: currency.to_string(),
@@ -355,7 +412,7 @@ pub fn stats(conn: &Connection, merchant: &str, currency: &str, tz_offset_min: i
         weekdays: [0; 7],
     };
 
-    for l in list_links(conn, merchant)?.iter().filter(|l| l.currency == currency && l.status == "waiting") {
+    for l in links.iter().filter(|l| l.currency == currency && l.status == "waiting") {
         s.waiting_count += 1;
         s.waiting_total_cents += l.total_cents;
     }
@@ -363,7 +420,7 @@ pub fn stats(conn: &Connection, merchant: &str, currency: &str, tz_offset_min: i
     let mut days: Vec<(i64, Agg)> = (0..7).map(|_| (0, Agg::default())).collect();
     let mut month = Agg::default();
 
-    for (t, l) in paid_local(conn, merchant, currency, offset)? {
+    for (t, l) in paid_local(&links, currency, offset) {
         s.paid_count += 1;
         s.paid_total_cents += l.total_cents;
         if t >= today {
@@ -399,24 +456,23 @@ pub fn stats(conn: &Connection, merchant: &str, currency: &str, tz_offset_min: i
     Ok(s)
 }
 
-pub fn products(
-    conn: &Connection,
+pub async fn products(
+    pool: &PgPool,
     merchant: &str,
     currency: &str,
     tz_offset_min: i64,
     days: Option<i64>,
 ) -> Result<Vec<ProductSummary>> {
+    let links = list_links(pool, merchant).await?;
+    let names = product_names(pool, merchant).await?;
     let offset = tz_offset_min * 60_000;
     let since = days.map(|d| today_start(offset) - (d - 1) * DAY_MS).unwrap_or(i64::MIN);
-    let names = product_names(conn, merchant)?;
     let mut map: HashMap<i64, ProductSummary> = names
-        .iter()
-        .map(|(id, name)| {
-            (*id, ProductSummary { id: *id, name: name.clone(), quantity: 0, revenue_cents: 0, orders: 0, last_sold_at: None })
-        })
+        .into_iter()
+        .map(|(id, name)| (id, ProductSummary { id, name, quantity: 0, revenue_cents: 0, orders: 0, last_sold_at: None }))
         .collect();
 
-    for (t, l) in paid_local(conn, merchant, currency, offset)? {
+    for (t, l) in paid_local(&links, currency, offset) {
         if t < since {
             continue;
         }
@@ -440,24 +496,25 @@ pub fn products(
     Ok(v)
 }
 
-pub fn product_detail(
-    conn: &Connection,
+pub async fn product_detail(
+    pool: &PgPool,
     merchant: &str,
     id: i64,
     currency: &str,
     tz_offset_min: i64,
 ) -> Result<Option<ProductDetail>> {
-    let Some(name) = product_names(conn, merchant)?.remove(&id) else { return Ok(None) };
+    let Some(name) = product_names(pool, merchant).await?.remove(&id) else { return Ok(None) };
+    let links = list_links(pool, merchant).await?;
     let offset = tz_offset_min * 60_000;
     let start = today_start(offset) - 13 * DAY_MS;
 
-    let mut stmt = conn.prepare("SELECT alias FROM product_aliases WHERE merchant_id = ?1 AND product_id = ?2")?;
-    let aliases: Vec<String> = stmt
-        .query_map(params![merchant, id], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?
-        .into_iter()
-        .filter(|a| normalize(a) != normalize(&name))
-        .collect();
+    let aliases: Vec<String> =
+        sqlx::query_scalar("SELECT alias FROM product_aliases WHERE merchant_id = $1 AND product_id = $2 ORDER BY alias")
+            .bind(merchant)
+            .bind(id)
+            .fetch_all(pool)
+            .await?;
+    let aliases = aliases.into_iter().filter(|a| normalize(a) != normalize(&name)).collect();
 
     let mut d = ProductDetail {
         id,
@@ -474,7 +531,7 @@ pub fn product_detail(
         weekdays: [0; 7],
     };
 
-    for (t, l) in paid_local(conn, merchant, currency, offset)? {
+    for (t, l) in paid_local(&links, currency, offset) {
         for it in l.items.iter().filter(|it| it.product_id == Some(id)) {
             d.quantity += it.quantity;
             d.revenue_cents += it.total_cents;
@@ -495,9 +552,20 @@ pub fn product_detail(
     Ok(Some(d))
 }
 
+/// These tests need a real Postgres: set TEST_DATABASE_URL (they are skipped otherwise).
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn pool() -> Option<PgPool> {
+        let url = std::env::var("TEST_DATABASE_URL").ok()?;
+        Some(connect(&url).await.expect("test database"))
+    }
+
+    /// A fresh merchant per test keeps runs independent without wiping tables.
+    fn merchant() -> String {
+        format!("test-{}", new_id())
+    }
 
     fn item(name: &str, product: Option<&str>) -> Item {
         Item { name: name.into(), quantity: 2, total_cents: 2000, product: product.map(Into::into), product_id: None }
@@ -507,43 +575,54 @@ mod tests {
         Draft { items, currency: "BRL".into(), note: String::new(), customer: String::new() }
     }
 
-    #[test]
-    fn learns_and_groups_products() {
-        let conn = open(":memory:").unwrap();
-        let a = create_link(&conn, "m1", "", &draft(vec![item("Pão fermentado", Some("Sourdough bread"))])).unwrap();
+    #[tokio::test]
+    async fn learns_and_groups_products() {
+        let Some(db) = pool().await else { return };
+        let m = merchant();
+        let a = create_link(&db, &m, "", &draft(vec![item("Pão fermentado", Some("Sourdough bread"))])).await.unwrap();
         // Same product written differently, no AI hint: matched by alias.
-        let b = create_link(&conn, "m1", "", &draft(vec![item("pao  FERMENTADO!", None)])).unwrap();
+        let b = create_link(&db, &m, "", &draft(vec![item("pao  FERMENTADO!", None)])).await.unwrap();
         // AI maps a new wording to the canonical name.
-        let c = create_link(&conn, "m1", "", &draft(vec![item("Sourdough", Some("Sourdough bread"))])).unwrap();
+        let c = create_link(&db, &m, "", &draft(vec![item("Sourdough", Some("Sourdough bread"))])).await.unwrap();
         let pid = a.items[0].product_id;
         assert_eq!(b.items[0].product_id, pid);
         assert_eq!(c.items[0].product_id, pid);
         for l in [&a, &b, &c] {
-            pay_link(&conn, &l.id, "card").unwrap();
+            assert!(pay_link(&db, &l.id, "card").await.unwrap());
         }
-        let p = products(&conn, "m1", "BRL", 0, None).unwrap();
+        let p = products(&db, &m, "BRL", 0, None).await.unwrap();
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].quantity, 6);
         assert_eq!(p[0].name, "Sourdough bread");
-        let s = stats(&conn, "m1", "BRL", 0).unwrap();
+        let s = stats(&db, &m, "BRL", 0).await.unwrap();
         assert_eq!(s.last_7_days[6].top[0].quantity, 6);
+        assert_eq!(s.paid_count, 3);
+        let d = product_detail(&db, &m, pid.unwrap(), "BRL", 0).await.unwrap().unwrap();
+        assert_eq!(d.quantity, 6);
+        assert!(d.aliases.iter().any(|a| a == "Pão fermentado"));
     }
 
-    #[test]
-    fn merges_products() {
-        let conn = open(":memory:").unwrap();
-        let a = create_link(&conn, "m1", "", &draft(vec![item("Coke", None)])).unwrap();
-        let b = create_link(&conn, "m1", "", &draft(vec![item("Coca-Cola", None)])).unwrap();
+    #[tokio::test]
+    async fn merges_and_renames_products() {
+        let Some(db) = pool().await else { return };
+        let m = merchant();
+        let a = create_link(&db, &m, "", &draft(vec![item("Coke", None)])).await.unwrap();
+        let b = create_link(&db, &m, "", &draft(vec![item("Coca-Cola", None)])).await.unwrap();
         let (src, dst) = (b.items[0].product_id.unwrap(), a.items[0].product_id.unwrap());
         assert_ne!(src, dst);
-        pay_link(&conn, &a.id, "card").unwrap();
-        pay_link(&conn, &b.id, "card").unwrap();
-        assert!(merge_products(&conn, "m1", src, dst).unwrap());
-        let p = products(&conn, "m1", "BRL", 0, None).unwrap();
+        pay_link(&db, &a.id, "card").await.unwrap();
+        pay_link(&db, &b.id, "card").await.unwrap();
+        assert!(merge_products(&db, &m, src, dst).await.unwrap());
+        assert!(rename_product(&db, &m, dst, "Coca-Cola 350ml").await.unwrap());
+        let p = products(&db, &m, "BRL", 0, None).await.unwrap();
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].quantity, 4);
+        assert_eq!(p[0].name, "Coca-Cola 350ml");
         // Future "coca cola" goes to the merged product.
-        let c = create_link(&conn, "m1", "", &draft(vec![item("coca cola", None)])).unwrap();
+        let c = create_link(&db, &m, "", &draft(vec![item("coca cola", None)])).await.unwrap();
         assert_eq!(c.items[0].product_id, Some(dst));
+        // Cancel only works for the owner.
+        assert!(!cancel_link(&db, "someone-else", &c.id).await.unwrap());
+        assert!(cancel_link(&db, &m, &c.id).await.unwrap());
     }
 }
