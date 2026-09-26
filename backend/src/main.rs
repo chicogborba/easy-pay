@@ -1,0 +1,188 @@
+mod ai;
+mod db;
+mod models;
+
+use std::sync::{Arc, Mutex};
+
+use axum::{
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
+use rusqlite::Connection;
+use serde_json::json;
+use tower_http::{
+    cors::CorsLayer,
+    services::{ServeDir, ServeFile},
+    trace::TraceLayer,
+};
+
+use models::*;
+
+#[derive(Clone)]
+struct AppState {
+    db: Arc<Mutex<Connection>>,
+    ai: ai::Ai,
+}
+
+type ApiResult<T> = Result<Json<T>, ApiError>;
+
+struct ApiError(StatusCode, String);
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.0, Json(json!({ "error": self.1 }))).into_response()
+    }
+}
+
+impl From<anyhow::Error> for ApiError {
+    fn from(e: anyhow::Error) -> Self {
+        tracing::error!("{e:#}");
+        ApiError(StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())
+    }
+}
+
+fn not_found() -> ApiError {
+    ApiError(StatusCode::NOT_FOUND, "not found".into())
+}
+
+/// POC auth: each device generates a random merchant id and sends it as a header.
+fn merchant_id(h: &HeaderMap) -> Result<String, ApiError> {
+    h.get("x-merchant-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| (8..=64).contains(&v.len()))
+        .map(str::to_string)
+        .ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "missing x-merchant-id".into()))
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let _ = dotenvy::dotenv();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,tower_http=info".into()),
+        )
+        .init();
+
+    let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "easy-pay.db".into());
+    let state = AppState {
+        db: Arc::new(Mutex::new(db::open(&db_path)?)),
+        ai: ai::Ai::from_env(),
+    };
+    if !state.ai.enabled() {
+        tracing::warn!("OPENROUTER_API_KEY not set: using the offline parser and voice is disabled");
+    }
+
+    let api = Router::new()
+        .route("/config", get(config))
+        .route("/chat", post(chat))
+        .route("/transcribe", post(transcribe))
+        .route("/links", get(list_links).post(create_link))
+        .route("/links/:id", get(get_link))
+        .route("/links/:id/cancel", post(cancel_link))
+        .route("/links/:id/pay", post(pay_link))
+        .route("/stats", get(stats));
+
+    // Serve the built frontend (SPA) from the same server.
+    let static_dir = std::env::var("STATIC_DIR").unwrap_or_else(|_| "../frontend/dist".into());
+    let spa = ServeDir::new(&static_dir).fallback(ServeFile::new(format!("{static_dir}/index.html")));
+
+    let app = Router::new()
+        .nest("/api", api)
+        .fallback_service(spa)
+        .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
+        .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http())
+        .with_state(state);
+
+    let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
+    tracing::info!("listening on http://{addr}");
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn config(State(s): State<AppState>) -> Json<serde_json::Value> {
+    Json(json!({ "ai": s.ai.enabled(), "voice": s.ai.enabled() }))
+}
+
+async fn chat(State(s): State<AppState>, Json(req): Json<ChatRequest>) -> ApiResult<ChatResponse> {
+    if req.messages.is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "empty conversation".into()));
+    }
+    Ok(Json(s.ai.chat(&req.messages, &req.lang, &req.currency).await))
+}
+
+async fn transcribe(State(s): State<AppState>, Json(req): Json<TranscribeRequest>) -> ApiResult<TranscribeResponse> {
+    if !s.ai.enabled() {
+        return Err(ApiError(StatusCode::SERVICE_UNAVAILABLE, "voice not configured".into()));
+    }
+    let text = s.ai.transcribe(&req.audio_base64, &req.lang).await?;
+    Ok(Json(TranscribeResponse { text }))
+}
+
+async fn create_link(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<CreateLinkRequest>,
+) -> ApiResult<Link> {
+    let merchant = merchant_id(&headers)?;
+    let draft = req
+        .draft
+        .sanitize()
+        .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "no items".into()))?;
+    let business: String = req.business_name.chars().take(60).collect();
+    let db = s.db.lock().unwrap();
+    Ok(Json(db::create_link(&db, &merchant, &business, &draft)?))
+}
+
+async fn list_links(State(s): State<AppState>, headers: HeaderMap) -> ApiResult<Vec<Link>> {
+    let merchant = merchant_id(&headers)?;
+    let db = s.db.lock().unwrap();
+    Ok(Json(db::list_links(&db, &merchant)?))
+}
+
+async fn get_link(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<Link> {
+    let db = s.db.lock().unwrap();
+    db::get_link(&db, &id)?.map(Json).ok_or_else(not_found)
+}
+
+async fn cancel_link(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult<Link> {
+    let merchant = merchant_id(&headers)?;
+    let db = s.db.lock().unwrap();
+    if !db::cancel_link(&db, &merchant, &id)? {
+        return Err(ApiError(StatusCode::CONFLICT, "cannot cancel".into()));
+    }
+    db::get_link(&db, &id)?.map(Json).ok_or_else(not_found)
+}
+
+/// MOCK payment. Replace with Stripe (Payment Element / Checkout) later.
+async fn pay_link(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<PayRequest>,
+) -> ApiResult<Link> {
+    let method = match req.method.as_str() {
+        "apple_pay" | "google_pay" | "card" => req.method,
+        _ => return Err(ApiError(StatusCode::BAD_REQUEST, "invalid method".into())),
+    };
+    // Simulate the processor taking a moment.
+    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+    let db = s.db.lock().unwrap();
+    let link = db::get_link(&db, &id)?.ok_or_else(not_found)?;
+    if link.status != "waiting" {
+        return Err(ApiError(StatusCode::CONFLICT, link.status));
+    }
+    db::pay_link(&db, &id, &method)?;
+    db::get_link(&db, &id)?.map(Json).ok_or_else(not_found)
+}
+
+async fn stats(State(s): State<AppState>, headers: HeaderMap, Query(q): Query<StatsQuery>) -> ApiResult<Stats> {
+    let merchant = merchant_id(&headers)?;
+    let currency = q.currency.unwrap_or_else(|| "USD".into()).to_uppercase();
+    let db = s.db.lock().unwrap();
+    Ok(Json(db::stats(&db, &merchant, &currency, q.tz_offset.unwrap_or(0))?))
+}

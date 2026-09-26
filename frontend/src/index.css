@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-paper font-body text-pencil antialiased;
+    /* Notebook-paper dot grain. */
+    background-image: radial-gradient(#e5e0d8 1px, transparent 1px);
+    background-size: 24px 24px;
+    -webkit-tap-highlight-color: transparent;
+    font-size: 18px;
+  }
+  /* Handwritten fonts first; system fallback for scripts they don't cover (CJK, Arabic). */
+  body {
+    font-family: 'Patrick Hand', 'Kalam', system-ui, sans-serif;
+  }
+  h1,
+  h2,
+  h3,
+  .font-heading {
+    font-family: 'Kalam', 'Patrick Hand', system-ui, sans-serif;
+  }
+}
+
+@layer utilities {
+  .paper-bg {
+    background-color: #fdfbf7;
+    background-image: radial-gradient(#e5e0d8 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+  /* Speech-bubble tails (border triangles) */
+  .tail-left::after,
+  .tail-right::after {
+    content: '';
+    position: absolute;
+    bottom: -12px;
+    width: 0;
+    height: 0;
+    border-style: solid;
+  }
+  .tail-left::after {
+    inset-inline-start: 22px;
+    border-width: 12px 14px 0 0;
+    border-color: #2d2d2d transparent transparent transparent;
+  }
+  .tail-right::after {
+    inset-inline-end: 22px;
+    border-width: 12px 0 0 14px;
+    border-color: #2d2d2d transparent transparent transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
