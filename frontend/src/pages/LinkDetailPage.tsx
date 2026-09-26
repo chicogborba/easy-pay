@@ -58,7 +58,7 @@ export default function LinkDetailPage() {
                 {t('created')} {date(link.created_at)}
               </span>
             </div>
-            <Receipt items={link.items} currency={link.currency} note={link.note} />
+            <Receipt items={link.items} currency={link.currency} note={link.note} customer={link.customer} />
             {link.status === 'paid' && link.paid_at && (
               <p className="mt-4 rounded-wobblySm border-2 border-dashed border-leaf bg-leaf/10 px-3 py-2 text-lg text-leaf">
                 ✓ {t('paidWith')} {methodLabel(link.paid_method, t)} · {date(link.paid_at)}

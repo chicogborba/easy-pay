@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 use regex::Regex;
 use serde_json::{json, Value};
 
-use crate::models::{ChatMessage, ChatResponse, Draft, Item};
+use crate::models::{CatalogEntry, ChatMessage, ChatResponse, Draft, Item};
 
 #[derive(Clone)]
 pub struct Ai {
@@ -30,19 +30,48 @@ fn lang_name(code: &str) -> &'static str {
     }
 }
 
-fn system_prompt(lang: &str, currency: &str) -> String {
+fn system_prompt(lang: &str, currency: &str, catalog: &[CatalogEntry]) -> String {
+    let catalog = if catalog.is_empty() {
+        "(none yet)".to_string()
+    } else {
+        catalog
+            .iter()
+            .map(|c| format!("- {} — usual price {:.2} {} each", c.name, c.unit_cents as f64 / 100.0, c.currency))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     format!(
-        r#"You help a small business owner create payment links. They describe what a customer is buying, in any language, by text or voice.
-Extract the items and prices. Reply ONLY with a JSON object, no markdown:
-{{"reply": "<very short friendly message in {lang}>", "draft": null | {{"items": [{{"name": "<item>", "quantity": <int>, "total": <number, price of the whole line>}}], "currency": "<ISO 4217>", "note": "<optional short note for the customer, or empty>"}}}}
-Rules:
-- "2 breads for 20" means quantity 2 and total 20. Only multiply when they say "each"/"cada"/"per unit".
-- Keep sizes in the item name, e.g. "Jam 500g". Keep item names in the language the owner used, nicely capitalized.
-- Currency: use the one mentioned (reais=BRL, dollars=USD, euros=EUR, pesos=MXN unless clear otherwise, yuan=CNY, rupees=INR). If none is mentioned use {currency}.
+        r#"You are the friendly assistant of a small business owner who creates payment links by chatting (text or voice, any language).
+Your job: turn what they sold into a clear itemized receipt. Reply ONLY with a JSON object, no markdown:
+{{"reply": "<short friendly message in {lang}>",
+  "choices": ["<quick answer the owner can tap>", ...],
+  "draft": null | {{"items": [{{"name": "<as shown on the receipt>", "product": "<catalog name>", "quantity": <int>, "total": <number, price of the whole line>}}],
+                   "currency": "<ISO 4217>", "note": "<short note for the customer or empty>", "customer": "<customer name or empty>"}}}}
+
+PRICES
+- "2 breads for 20" = quantity 2, total 20. Multiply only when they say "each"/"cada"/"per unit".
+- ONE price for SEVERAL DIFFERENT products (e.g. "a pizza and a coke for 80"): do NOT guess a split. Set draft to null and ask
+  whether they want to tell the price of each one or keep them together on one line. If the catalog's usual prices add up
+  exactly to the total, offer that split as the first choice. If they choose "together", make ONE line like "Pizza + Coke", quantity 1.
+- Missing price: if the product is in the catalog, use its usual price and say so in the reply (e.g. "I used your usual price: 12").
+  Otherwise ask for the price (draft null).
+- Currency: the one mentioned (reais=BRL, dollars=USD, euros=EUR, pesos=MXN unless clear, yuan=CNY, rupees=INR), else {currency}.
+
+PRODUCTS (learn the owner's catalog)
+- For every item set "product": if it is the same thing as a catalog product (synonym, abbreviation, singular/plural, typo, other language),
+  use the catalog name EXACTLY. Otherwise invent a short clean generic name: singular, capitalized, keep size/flavor ("Jam 500g", "Chocolate cake").
+- "name" is what the customer sees: keep the owner's wording, nicely capitalized.
+
+CONVERSATION
+- Ask at most ONE short question at a time. Whenever you ask, give 2-3 "choices" (max 6 words each, in {lang}), written as the owner's answer.
+- When you return a draft, reply like "Here it is! Is it right?" and leave "choices" empty (the app shows buttons).
 - If the owner corrects something, return the full updated draft.
-- If there is no price or nothing to sell, set "draft" to null and in "reply" ask simply what they sold and for how much.
-- When there is a draft, "reply" should say something like "Here it is! Is it right?" in {lang}.
-- Be warm and extremely simple. The user is not tech savvy."#,
+- If they mention who is buying ("for Joana"), fill "customer".
+- Small talk or off-topic: answer in one sentence and ask what they sold.
+- The owner is not tech savvy: be warm, simple, no jargon, max 2 short sentences.
+
+OWNER'S CATALOG
+{catalog}"#,
         lang = lang_name(lang),
     )
 }
@@ -87,11 +116,17 @@ impl Ai {
             .ok_or_else(|| anyhow!("unexpected response: {res}"))
     }
 
-    pub async fn chat(&self, history: &[ChatMessage], lang: &str, currency: &str) -> ChatResponse {
+    pub async fn chat(
+        &self,
+        history: &[ChatMessage],
+        lang: &str,
+        currency: &str,
+        catalog: &[CatalogEntry],
+    ) -> ChatResponse {
         if !self.enabled() {
-            return local_parse(history, currency);
+            return local_parse(history, currency, lang);
         }
-        let mut messages = vec![json!({ "role": "system", "content": system_prompt(lang, currency) })];
+        let mut messages = vec![json!({ "role": "system", "content": system_prompt(lang, currency, catalog) })];
         // Keep the conversation short: last 12 turns is plenty for corrections.
         let start = history.len().saturating_sub(12);
         for m in &history[start..] {
@@ -101,11 +136,11 @@ impl Ai {
         match self.complete(&self.model, Value::Array(messages), true).await {
             Ok(text) => parse_model_output(&text, currency).unwrap_or_else(|| {
                 tracing::warn!("could not parse model output: {text}");
-                local_parse(history, currency)
+                local_parse(history, currency, lang)
             }),
             Err(e) => {
                 tracing::error!("openrouter error: {e:#}");
-                local_parse(history, currency)
+                local_parse(history, currency, lang)
             }
         }
     }
@@ -124,6 +159,28 @@ impl Ai {
         }]);
         let text = self.complete(&self.audio_model, messages, false).await?;
         Ok(text.trim().trim_matches('"').to_string())
+    }
+
+    /// Short, practical tips generated from the merchant's aggregated sales data.
+    pub async fn insights(&self, data: &Value, lang: &str) -> Result<Vec<String>> {
+        let messages = json!([
+            { "role": "system", "content": format!(
+                "You are a friendly business coach for a very small, non-technical seller. Based ONLY on the sales data given, \
+                 write 3 short, concrete, encouraging tips in {} (max 20 words each, simple words, one emoji at the start of each). \
+                 Mention product names and weekdays when useful (weekdays index 0 = Sunday). Money values are in cents; show them \
+                 as normal amounts with the currency. Reply ONLY with JSON: {{\"tips\": [\"...\", \"...\", \"...\"]}}",
+                lang_name(lang)
+            )},
+            { "role": "user", "content": data.to_string() }
+        ]);
+        let text = self.complete(&self.model, messages, true).await?;
+        let start = text.find('{').ok_or_else(|| anyhow!("no json"))?;
+        let end = text.rfind('}').ok_or_else(|| anyhow!("no json"))?;
+        let v: Value = serde_json::from_str(&text[start..=end])?;
+        Ok(v["tips"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).take(4).collect())
+            .unwrap_or_default())
     }
 }
 
@@ -150,6 +207,8 @@ fn parse_model_output(text: &str, default_currency: &str) -> Option<ChatResponse
                     name: it["name"].as_str()?.to_string(),
                     quantity: it["quantity"].as_u64().unwrap_or(1) as u32,
                     total_cents: to_cents(&it["total"])?,
+                    product: it["product"].as_str().map(str::to_string),
+                    product_id: None,
                 })
             })
             .collect();
@@ -157,14 +216,57 @@ fn parse_model_output(text: &str, default_currency: &str) -> Option<ChatResponse
             items,
             currency: d["currency"].as_str().unwrap_or(default_currency).to_string(),
             note: d["note"].as_str().unwrap_or("").to_string(),
+            customer: d["customer"].as_str().unwrap_or("").to_string(),
         }
         .sanitize()
     });
-    Some(ChatResponse { reply, draft })
+    // Buttons only make sense for questions; a draft has its own buttons.
+    let choices = if draft.is_some() {
+        Vec::new()
+    } else {
+        v["choices"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|c| c.as_str()).map(|c| c.chars().take(60).collect()).take(3).collect())
+            .unwrap_or_default()
+    };
+    Some(ChatResponse { reply, draft, choices })
+}
+
+/// Canned replies for the offline parser.
+fn canned(lang: &str, key: &str) -> &'static str {
+    match (key, lang) {
+        ("ok", "es") => "¡Aquí está! ¿Está bien?",
+        ("ok", "pt") => "Aqui está! Está certo?",
+        ("ok", "zh") => "好了！对吗？",
+        ("ok", "hi") => "यह रहा! क्या यह सही है?",
+        ("ok", "ar") => "ها هو! هل هذا صحيح؟",
+        ("ok", "fr") => "Voilà ! C'est correct ?",
+        ("ok", _) => "Here it is! Is it right?",
+        ("together", "es") => "Puse esos productos juntos en una línea. ¿Está bien?",
+        ("together", "pt") => "Coloquei esses produtos juntos em uma linha. Está certo?",
+        ("together", "zh") => "我把这些商品放在同一行了。对吗？",
+        ("together", "hi") => "मैंने इन चीज़ों को एक ही लाइन में रखा है। क्या यह सही है?",
+        ("together", "ar") => "وضعت هذه المنتجات معًا في سطر واحد. هل هذا صحيح؟",
+        ("together", "fr") => "J'ai mis ces produits ensemble sur une ligne. C'est correct ?",
+        ("together", _) => "I put those products together on one line. Is it right?",
+        (_, "es") => "Dime qué vendiste y el precio. Ejemplo: 2 panes por 20",
+        (_, "pt") => "Me diga o que vendeu e o preço. Exemplo: 2 pães por 20",
+        (_, "zh") => "告诉我你卖了什么、多少钱。例如：2个面包 20元",
+        (_, "hi") => "बताइए आपने क्या बेचा और कितने में। जैसे: 2 ब्रेड 20 में",
+        (_, "ar") => "أخبرني ماذا بعت وبكم. مثال: 2 خبز بـ 20",
+        (_, "fr") => "Dites-moi ce que vous avez vendu et le prix. Exemple : 2 pains pour 20",
+        _ => "Tell me what you sold and the price. Example: 2 breads for 20",
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    chars.next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default() + chars.as_str()
 }
 
 /// Tiny offline parser: "500g jam for 14 and 2 breads for 20".
-fn local_parse(history: &[ChatMessage], default_currency: &str) -> ChatResponse {
+/// Products without their own price ("a pizza and a coke for 80") are joined into one line.
+fn local_parse(history: &[ChatMessage], default_currency: &str, lang: &str) -> ChatResponse {
     let text = history
         .iter()
         .rev()
@@ -183,7 +285,7 @@ fn local_parse(history: &[ChatMessage], default_currency: &str) -> ChatResponse 
         default_currency
     };
 
-    let splitter = Regex::new(r"(?i)\s+(?:and|e|y|et|und)\s+|[,;+\n]|\s&\s").unwrap();
+    let splitter = Regex::new(r"(?i)\s+(?:and|e|y|et|und|com|with|con)\s+|[,;+\n]|\s&\s").unwrap();
     let cur = r"(?:reais|real|dollars?|d[oó]lares|euros?|pesos|bucks)\b";
     let price_re = Regex::new(&format!(
         r"(?i)(?:\b(?:for|por|a|at|para|pour|=)\s*|r\$\s*|\$\s*|€\s*)(\d+(?:[.,]\d{{1,2}})?)(?:\s*{cur})?|(\d+(?:[.,]\d{{1,2}})?)\s*{cur}"
@@ -191,17 +293,12 @@ fn local_parse(history: &[ChatMessage], default_currency: &str) -> ChatResponse 
     .unwrap();
     let qty_re = Regex::new(r"^\s*(\d+)\s+(?:x\s+)?([^\d].*)$").unwrap();
     let filler = Regex::new(
-        r"(?i)^(?:i\s+)?(?:need|want|make|create|gera|gerar|preciso\s+de|quero|necesito|un|uma?|a|link|de|pagamento|payment|pago|para|pra|for|of)\b\s*",
+        r"(?i)^(?:i\s+)?(?:need|want|make|create|gera|gerar|preciso\s+de|quero|necesito|un|uma?|a|an|one|link|de|pagamento|payment|pago|para|pra|for|of)\b\s*",
     )
     .unwrap();
 
-    let mut items = Vec::new();
-    for seg in splitter.split(text) {
-        let Some(cap) = price_re.captures(seg) else { continue };
-        let num = cap.get(1).or_else(|| cap.get(2)).unwrap().as_str().replace(',', ".");
-        let Ok(price) = num.parse::<f64>() else { continue };
-        let whole = cap.get(0).unwrap();
-        let mut name = format!("{} {}", &seg[..whole.start()], &seg[whole.end()..]);
+    let clean = |raw: &str| -> (u32, String) {
+        let mut name = raw.to_string();
         for _ in 0..12 {
             name = filler.replace(name.trim(), "").to_string();
         }
@@ -210,22 +307,43 @@ fn local_parse(history: &[ChatMessage], default_currency: &str) -> ChatResponse 
             quantity = q[1].parse().unwrap_or(1);
             name = q[2].to_string();
         }
-        let name = name.trim().trim_end_matches(['.', ':', '-']).trim();
+        (quantity, capitalize(name.trim().trim_end_matches(['.', ':', '-']).trim()))
+    };
+
+    let mut items = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
+    let mut grouped = false;
+    for seg in splitter.split(text) {
+        let Some(cap) = price_re.captures(seg) else {
+            let (_, name) = clean(seg);
+            if !name.is_empty() {
+                pending.push(name);
+            }
+            continue;
+        };
+        let num = cap.get(1).or_else(|| cap.get(2)).unwrap().as_str().replace(',', ".");
+        let Ok(price) = num.parse::<f64>() else { continue };
+        let whole = cap.get(0).unwrap();
+        let (mut quantity, mut name) = clean(&format!("{} {}", &seg[..whole.start()], &seg[whole.end()..]));
+        if !pending.is_empty() {
+            pending.push(name);
+            name = pending.drain(..).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(" + ");
+            quantity = 1;
+            grouped = true;
+        }
         if name.is_empty() {
             continue;
         }
-        let mut chars = name.chars();
-        let name = chars.next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default() + chars.as_str();
-        items.push(Item { name, quantity, total_cents: (price * 100.0).round() as i64 });
+        items.push(Item { name, quantity, total_cents: (price * 100.0).round() as i64, product: None, product_id: None });
     }
 
-    let draft = Draft { items, currency: currency.into(), note: String::new() }.sanitize();
-    let reply = if draft.is_some() {
-        "Here it is! Is it right?".into()
-    } else {
-        "Tell me what you sold and the price. Example: 2 breads for 20".into()
+    let draft = Draft { items, currency: currency.into(), note: String::new(), customer: String::new() }.sanitize();
+    let reply = match (&draft, grouped) {
+        (Some(_), true) => canned(lang, "together"),
+        (Some(_), false) => canned(lang, "ok"),
+        _ => canned(lang, "ask"),
     };
-    ChatResponse { reply, draft }
+    ChatResponse { reply: reply.into(), draft, choices: Vec::new() }
 }
 
 #[cfg(test)]
@@ -238,7 +356,7 @@ mod tests {
             role: "user".into(),
             content: "preciso de um link de pagamento pra 500g de geleia por 14 reais e 2 pães artesanais por 20 reais".into(),
         }];
-        let r = local_parse(&h, "USD");
+        let r = local_parse(&h, "USD", "pt");
         let d = r.draft.unwrap();
         assert_eq!(d.currency, "BRL");
         assert_eq!(d.items.len(), 2);
@@ -257,5 +375,20 @@ mod tests {
         let d = r.draft.unwrap();
         assert_eq!(d.items[0].total_cents, 1450);
         assert_eq!(d.currency, "BRL");
+    }
+
+    #[test]
+    fn groups_items_sharing_one_price() {
+        let h = vec![ChatMessage { role: "user".into(), content: "uma pizza e uma coca por 80".into() }];
+        let d = local_parse(&h, "BRL", "pt").draft.unwrap();
+        assert_eq!(d.items.len(), 1);
+        assert_eq!(d.items[0].name, "Pizza + Coca");
+        assert_eq!(d.items[0].total_cents, 8000);
+    }
+
+    #[test]
+    fn choices_only_without_draft() {
+        let r = parse_model_output(r#"{"reply":"Price of each?","choices":["Together","Each price"],"draft":null}"#, "USD").unwrap();
+        assert_eq!(r.choices.len(), 2);
     }
 }

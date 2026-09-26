@@ -84,7 +84,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/links/:id", get(get_link))
         .route("/links/:id/cancel", post(cancel_link))
         .route("/links/:id/pay", post(pay_link))
-        .route("/stats", get(stats));
+        .route("/stats", get(stats))
+        .route("/products", get(list_products))
+        .route("/products/:id", get(get_product))
+        .route("/products/:id/rename", post(rename_product))
+        .route("/products/:id/merge", post(merge_product))
+        .route("/insights", post(insights));
 
     // Serve the built frontend (SPA) from the same server.
     let static_dir = std::env::var("STATIC_DIR").unwrap_or_else(|_| "../frontend/dist".into());
@@ -109,11 +114,20 @@ async fn config(State(s): State<AppState>) -> Json<serde_json::Value> {
     Json(json!({ "ai": s.ai.enabled(), "voice": s.ai.enabled() }))
 }
 
-async fn chat(State(s): State<AppState>, Json(req): Json<ChatRequest>) -> ApiResult<ChatResponse> {
+async fn chat(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<ChatRequest>,
+) -> ApiResult<ChatResponse> {
     if req.messages.is_empty() {
         return Err(ApiError(StatusCode::BAD_REQUEST, "empty conversation".into()));
     }
-    Ok(Json(s.ai.chat(&req.messages, &req.lang, &req.currency).await))
+    // The merchant's known products let the AI group synonyms and reuse usual prices.
+    let catalog = match merchant_id(&headers) {
+        Ok(m) => db::catalog(&s.db.lock().unwrap(), &m)?,
+        Err(_) => Vec::new(),
+    };
+    Ok(Json(s.ai.chat(&req.messages, &req.lang, &req.currency, &catalog).await))
 }
 
 async fn transcribe(State(s): State<AppState>, Json(req): Json<TranscribeRequest>) -> ApiResult<TranscribeResponse> {
@@ -185,4 +199,95 @@ async fn stats(State(s): State<AppState>, headers: HeaderMap, Query(q): Query<St
     let currency = q.currency.unwrap_or_else(|| "USD".into()).to_uppercase();
     let db = s.db.lock().unwrap();
     Ok(Json(db::stats(&db, &merchant, &currency, q.tz_offset.unwrap_or(0))?))
+}
+
+async fn list_products(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<StatsQuery>,
+) -> ApiResult<Vec<ProductSummary>> {
+    let merchant = merchant_id(&headers)?;
+    let currency = q.currency.unwrap_or_else(|| "USD".into()).to_uppercase();
+    let db = s.db.lock().unwrap();
+    Ok(Json(db::products(&db, &merchant, &currency, q.tz_offset.unwrap_or(0), q.days)?))
+}
+
+async fn get_product(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Query(q): Query<StatsQuery>,
+) -> ApiResult<ProductDetail> {
+    let merchant = merchant_id(&headers)?;
+    let currency = q.currency.unwrap_or_else(|| "USD".into()).to_uppercase();
+    let db = s.db.lock().unwrap();
+    db::product_detail(&db, &merchant, id, &currency, q.tz_offset.unwrap_or(0))?
+        .map(Json)
+        .ok_or_else(not_found)
+}
+
+async fn rename_product(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(req): Json<RenameRequest>,
+) -> ApiResult<serde_json::Value> {
+    let merchant = merchant_id(&headers)?;
+    let name: String = req.name.trim().chars().take(80).collect();
+    if name.is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "empty name".into()));
+    }
+    let db = s.db.lock().unwrap();
+    if !db::rename_product(&db, &merchant, id, &name)? {
+        return Err(not_found());
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn merge_product(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(req): Json<MergeRequest>,
+) -> ApiResult<serde_json::Value> {
+    let merchant = merchant_id(&headers)?;
+    let db = s.db.lock().unwrap();
+    if !db::merge_products(&db, &merchant, id, req.into_id)? {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "cannot merge".into()));
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// AI tips from aggregated data. 503 without an API key (the app shows its own simple tips).
+async fn insights(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<InsightsRequest>,
+) -> ApiResult<InsightsResponse> {
+    let merchant = merchant_id(&headers)?;
+    if !s.ai.enabled() {
+        return Err(ApiError(StatusCode::SERVICE_UNAVAILABLE, "ai not configured".into()));
+    }
+    let currency = req.currency.to_uppercase();
+    let data = {
+        let db = s.db.lock().unwrap();
+        let st = db::stats(&db, &merchant, &currency, req.tz_offset)?;
+        let products: Vec<_> = db::products(&db, &merchant, &currency, req.tz_offset, Some(30))?
+            .into_iter()
+            .filter(|p| p.quantity > 0)
+            .take(10)
+            .collect();
+        json!({
+            "currency": currency,
+            "this_week_cents": st.week_cents,
+            "previous_week_cents": st.prev_week_cents,
+            "last_30_days_cents": st.month_cents,
+            "waiting_links": st.waiting_count,
+            "waiting_cents": st.waiting_total_cents,
+            "revenue_by_weekday_last_8_weeks_cents": st.weekdays,
+            "top_products_last_30_days": products,
+        })
+    };
+    let tips = s.ai.insights(&data, &req.lang).await?;
+    Ok(Json(InsightsResponse { tips }))
 }

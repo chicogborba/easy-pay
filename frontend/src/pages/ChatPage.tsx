@@ -8,7 +8,7 @@ import { ShareActions } from '../components/ShareActions'
 import { Arrow, Button, Card, cx, Spinner } from '../components/ui'
 
 type Entry =
-  | { kind: 'text'; role: 'user' | 'assistant'; text: string }
+  | { kind: 'text'; role: 'user' | 'assistant'; text: string; choices?: string[] }
   | { kind: 'draft'; draft: Draft; state: 'open' | 'done' }
   | { kind: 'link'; link: Link }
 
@@ -80,7 +80,7 @@ export default function ChatPage() {
       const res = await api.chat(toHistory(next), settings.lang, settings.currency)
       setEntries((cur) => [
         ...cur,
-        ...(res.reply ? [{ kind: 'text', role: 'assistant', text: res.reply } as Entry] : []),
+        ...(res.reply ? [{ kind: 'text', role: 'assistant', text: res.reply, choices: res.choices } as Entry] : []),
         ...(res.draft ? [{ kind: 'draft', draft: res.draft, state: 'open' } as Entry] : []),
       ])
     } catch {
@@ -202,11 +202,34 @@ export default function ChatPage() {
         )}
 
         {entries.map((e, i) => {
-          if (e.kind === 'text') return <Bubble key={i} role={e.role}>{e.text}</Bubble>
+          if (e.kind === 'text')
+            return (
+              <div key={i}>
+                <Bubble role={e.role}>{e.text}</Bubble>
+                {/* Quick answers for the AI's question: only on the latest message. */}
+                {i === entries.length - 1 && !busy && voice === 'idle' && !!e.choices?.length && (
+                  <div className="mt-5 flex flex-wrap gap-3 ps-2">
+                    {e.choices.map((c, ci) => (
+                      <button
+                        key={c}
+                        onClick={() => send(c)}
+                        className={cx(
+                          'min-h-[48px] animate-pop rounded-wobblySm border-2 border-pencil bg-postit px-4 py-2 text-start text-xl shadow-hardSm transition-all duration-100',
+                          'hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none active:scale-95',
+                          ci % 2 ? 'rotate-1' : '-rotate-1',
+                        )}
+                      >
+                        {c}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
           if (e.kind === 'draft')
             return (
               <Card key={i} decoration="tape" tilt={-0.6} className={cx('animate-pop', e.state === 'done' && 'opacity-60')}>
-                <Receipt items={e.draft.items} currency={e.draft.currency} note={e.draft.note} />
+                <Receipt items={e.draft.items} currency={e.draft.currency} note={e.draft.note} customer={e.draft.customer} />
                 {e.state === 'open' && (
                   <div className="mt-5 space-y-3">
                     <Button

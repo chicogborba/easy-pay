@@ -2,11 +2,28 @@ import type { Item } from '../lib/api'
 import { useApp } from '../lib/app'
 
 /** The itemized list shared by the chat draft, link detail and customer page. */
-export function Receipt({ items, currency, note, big }: { items: Item[]; currency: string; note?: string; big?: boolean }) {
+export function Receipt({
+  items,
+  currency,
+  note,
+  customer,
+  big,
+}: {
+  items: Item[]
+  currency: string
+  note?: string
+  customer?: string
+  big?: boolean
+}) {
   const { t, fmt } = useApp()
   const total = items.reduce((s, i) => s + i.total_cents, 0)
   return (
     <div className="font-body">
+      {customer && (
+        <p className="mb-3 inline-block -rotate-1 rounded-wobblySm bg-postit px-3 py-0.5 text-lg">
+          {t('forCustomer', { name: customer })}
+        </p>
+      )}
       <ul className="space-y-2">
         {items.map((it, i) => (
           <li key={i} className={`flex items-baseline gap-2 ${big ? 'text-2xl' : 'text-xl'}`}>

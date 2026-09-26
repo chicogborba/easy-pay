@@ -4,9 +4,11 @@ Mobile-first web app for small sellers: describe the sale in a chat (text or voi
 
 > "2 artisan breads for 20 and 500g of jam for 14" → receipt → **Send on WhatsApp**
 
-- **Chat (New link)** – AI (OpenRouter) turns free text/voice into items + prices, asks for confirmation, creates the link.
+- **Chat (New link)** – AI (OpenRouter) turns free text/voice into items + prices, asks short follow-up questions with tap-to-answer buttons (e.g. "a pizza and a coke for 80" → price of each, or together?), reuses usual prices, captures the customer name, then creates the link.
+- **Learns your products** – every line is linked to a product in the merchant's catalog. The AI receives the catalog and maps synonyms/plurals/other languages to the same product ("pão fermentado" = "Sourdough bread"); each wording is saved as an alias. Products can be renamed or merged manually.
 - **My links** – history with status (Waiting / Paid / Cancelled), share, cancel.
-- **My money** – week/today/30-day totals, 7-day chart, best sellers.
+- **My money** – week/today/30-day totals, AI tips, 7-day chart (tap a day → best sellers of that day), best sellers of 30 days.
+- **My products** – ranking by period (7d / 30d / all), product page with 14-day chart, best weekday, aliases, rename/merge.
 - **Customer page** `/p/:id` – receipt + Apple Pay / Google Pay / Card. **Payments are mocked** (no real charge).
 - Languages: English, 中文, हिन्दी, Español, العربية (RTL), Français, Português.
 - Hand-drawn design system (Kalam / Patrick Hand, wobbly borders, hard shadows) — tokens in `frontend/tailwind.config.js`.
@@ -52,6 +54,10 @@ The browser records audio, converts it to 16 kHz mono WAV, and `POST /api/transc
 | POST | `/api/links/:id/cancel` | merchant |
 | POST | `/api/links/:id/pay` | public, **mock** `{ method: apple_pay \| google_pay \| card }` |
 | GET | `/api/stats?currency=BRL&tz_offset=-180` | merchant |
+| GET | `/api/products?currency=BRL&days=30` | merchant, ranking |
+| GET | `/api/products/:id?currency=BRL` | merchant, detail |
+| POST | `/api/products/:id/rename` · `/merge` | merchant `{ name }` · `{ into_id }` |
+| POST | `/api/insights` | merchant, AI tips `{ lang, currency, tz_offset }` |
 
 POC auth: each device gets a random merchant id in `localStorage`.
 

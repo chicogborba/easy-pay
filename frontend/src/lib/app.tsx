@@ -120,3 +120,11 @@ export function timeAgo(ms: number, lang: LangCode) {
   for (const [u, s] of units) if (Math.abs(diff) >= s) return rtf.format(Math.round(diff / s), u)
   return rtf.format(0, 'minute')
 }
+
+/** Weekday name for index 0 = Sunday. */
+export function weekdayName(index: number, lang: LangCode, style: 'long' | 'short' = 'long') {
+  const sunday = Date.UTC(2024, 0, 7, 12)
+  return new Intl.DateTimeFormat(localeOf(lang), { weekday: style, timeZone: 'UTC' }).format(sunday + index * 86_400_000)
+}
+
+export const capitalize = (s: string) => s.charAt(0).toLocaleUpperCase() + s.slice(1)

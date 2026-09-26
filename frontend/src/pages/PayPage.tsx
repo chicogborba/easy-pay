@@ -65,7 +65,7 @@ export default function PayPage() {
           <Card decoration="tape" tilt={-0.8} className="!px-6 !pb-6 !pt-8">
             <h2 className="mb-1 font-heading text-2xl font-bold">{t('yourOrder')}</h2>
             <Squiggle className="mb-4 w-24 text-marker" />
-            <Receipt items={link.items} currency={link.currency} note={link.note} big />
+            <Receipt items={link.items} currency={link.currency} note={link.note} customer={link.customer} big />
 
             {link.status === 'paid' && (
               <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center">
