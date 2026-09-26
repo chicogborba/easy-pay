@@ -88,7 +88,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/products/:id", get(get_product))
         .route("/products/:id/rename", post(rename_product))
         .route("/products/:id/merge", post(merge_product))
-        .route("/insights", post(insights));
+        .route("/insights", post(insights))
+        .route("/customers", get(list_customers))
+        .route("/customers/:id", get(get_customer).post(update_customer));
 
     // Serve the built frontend (SPA) from the same server.
     let static_dir = std::env::var("STATIC_DIR").unwrap_or_else(|_| "../frontend/dist".into());
@@ -161,9 +163,11 @@ async fn list_links(State(s): State<AppState>, headers: HeaderMap) -> ApiResult<
     Ok(Json(db::list_links(db, &merchant).await?))
 }
 
-async fn get_link(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<Link> {
-    let db = &s.db;
-    db::get_link(db, &id).await?.map(Json).ok_or_else(not_found)
+/// Public (the customer opens it), but who paid is only shown to the link's owner.
+async fn get_link(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult<Link> {
+    let link = db::get_link(&s.db, &id).await?.ok_or_else(not_found)?;
+    let owner = merchant_id(&headers).is_ok_and(|m| m == link.merchant_id);
+    Ok(Json(if owner { link } else { link.public() }))
 }
 
 async fn cancel_link(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult<Link> {
@@ -182,9 +186,10 @@ async fn pay_link(
     Json(req): Json<PayRequest>,
 ) -> ApiResult<Link> {
     let method = match req.method.as_str() {
-        "apple_pay" | "google_pay" | "card" => req.method,
+        "apple_pay" | "google_pay" | "card" => req.method.clone(),
         _ => return Err(ApiError(StatusCode::BAD_REQUEST, "invalid method".into())),
     };
+    let payer = req.payer().map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.into()))?;
     // Simulate the processor taking a moment.
     tokio::time::sleep(std::time::Duration::from_millis(900)).await;
     let db = &s.db;
@@ -193,10 +198,10 @@ async fn pay_link(
         return Err(ApiError(StatusCode::CONFLICT, link.status));
     }
     // The UPDATE only matches a waiting link, so two payments can't both succeed.
-    if !db::pay_link(db, &id, &method).await? {
+    if !db::pay_link(db, &id, &method, &payer).await? {
         return Err(ApiError(StatusCode::CONFLICT, "paid".into()));
     }
-    db::get_link(db, &id).await?.map(Json).ok_or_else(not_found)
+    db::get_link(db, &id).await?.map(|l| Json(l.public())).ok_or_else(not_found)
 }
 
 async fn stats(State(s): State<AppState>, headers: HeaderMap, Query(q): Query<StatsQuery>) -> ApiResult<Stats> {
@@ -282,8 +287,17 @@ async fn insights(
             .filter(|p| p.quantity > 0)
             .take(10)
             .collect();
+        let customers = db::customers(db, &merchant, &currency).await?;
+        let mut top_customers: Vec<_> = customers
+            .iter()
+            .filter(|c| c.orders > 0)
+            .map(|c| json!({ "first_name": c.name.split_whitespace().next(), "orders": c.orders, "spent_cents": c.spent_cents, "last_purchase_at": c.last_purchase_at }))
+            .collect();
+        top_customers.sort_by_key(|c| -c["spent_cents"].as_i64().unwrap_or(0));
+        top_customers.truncate(5);
         json!({
             "currency": currency,
+            "now_ms": db::now_ms(),
             "this_week_cents": st.week_cents,
             "previous_week_cents": st.prev_week_cents,
             "last_30_days_cents": st.month_cents,
@@ -291,8 +305,49 @@ async fn insights(
             "waiting_cents": st.waiting_total_cents,
             "revenue_by_weekday_last_8_weeks_cents": st.weekdays,
             "top_products_last_30_days": products,
+            "customers": {
+                "total": customers.len(),
+                "returning": customers.iter().filter(|c| c.orders > 1).count(),
+                "top_by_spent": top_customers,
+            },
         })
     };
     let tips = s.ai.insights(&data, &req.lang).await?;
     Ok(Json(InsightsResponse { tips }))
+}
+
+async fn list_customers(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<StatsQuery>,
+) -> ApiResult<Vec<CustomerSummary>> {
+    let merchant = merchant_id(&headers)?;
+    let currency = q.currency.unwrap_or_else(|| "USD".into()).to_uppercase();
+    Ok(Json(db::customers(&s.db, &merchant, &currency).await?))
+}
+
+async fn get_customer(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Query(q): Query<StatsQuery>,
+) -> ApiResult<CustomerDetail> {
+    let merchant = merchant_id(&headers)?;
+    let currency = q.currency.unwrap_or_else(|| "USD".into()).to_uppercase();
+    db::customer_detail(&s.db, &merchant, id, &currency).await?.map(Json).ok_or_else(not_found)
+}
+
+async fn update_customer(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(req): Json<UpdateCustomerRequest>,
+) -> ApiResult<serde_json::Value> {
+    let merchant = merchant_id(&headers)?;
+    let name = req.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(|n| n.chars().take(80).collect::<String>());
+    let note = req.note.as_deref().map(|n| n.trim().chars().take(1000).collect::<String>());
+    if !db::update_customer(&s.db, &merchant, id, name.as_deref(), note.as_deref()).await? {
+        return Err(not_found());
+    }
+    Ok(Json(json!({ "ok": true })))
 }

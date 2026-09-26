@@ -84,7 +84,9 @@ export default function LinksPage() {
               >
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-xl">
-                    {l.customer && <span className="font-heading font-bold text-pen">{l.customer} · </span>}
+                    {(l.payer_name || l.customer) && (
+                      <span className="font-heading font-bold text-pen">{l.payer_name || l.customer} · </span>
+                    )}
                     {itemsTitle(l.items)}
                   </p>
                   <p className="text-base text-pencil/60">{timeAgo(l.paid_at ?? l.created_at, settings.lang)}</p>

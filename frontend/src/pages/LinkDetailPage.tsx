@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Eye, XCircle } from 'lucide-react'
+import { ArrowLeft, Eye, UserRound, XCircle } from 'lucide-react'
 import { api, type Link } from '../lib/api'
 import { localeOf, useApp } from '../lib/app'
 import { Receipt } from '../components/Receipt'
@@ -63,6 +63,20 @@ export default function LinkDetailPage() {
               <p className="mt-4 rounded-wobblySm border-2 border-dashed border-leaf bg-leaf/10 px-3 py-2 text-lg text-leaf">
                 ✓ {t('paidWith')} {methodLabel(link.paid_method, t)} · {date(link.paid_at)}
               </p>
+            )}
+            {link.payer_name && (
+              <button
+                onClick={() => link.customer_id && navigate(`/customers/${link.customer_id}`)}
+                className="mt-3 flex w-full items-center gap-3 rounded-wobblySm border-2 border-pencil bg-white px-3 py-2 text-start shadow-hardSm transition-transform duration-100 hover:-rotate-1"
+              >
+                <UserRound strokeWidth={2.5} className="shrink-0 text-pen" />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-base text-pencil/60">{t('paidBy')}</span>
+                  <span className="block truncate text-xl">{link.payer_name}</span>
+                  <span className="block text-base text-pencil/60" dir="ltr">{link.payer_phone}</span>
+                </span>
+                <span className="shrink-0 text-lg text-pen">{t('seeCustomer')} →</span>
+              </button>
             )}
           </Card>
 

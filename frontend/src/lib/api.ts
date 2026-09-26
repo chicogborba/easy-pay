@@ -14,7 +14,24 @@ export type Link = {
   created_at: number
   paid_at: number | null
   paid_method: PayMethod | null
+  customer_id: number | null
+  payer_name: string
+  payer_phone: string
+  payer_email: string
 }
+export type Payer = { name: string; phone: string; email: string }
+export type CustomerSummary = {
+  id: number
+  name: string
+  phone: string
+  email: string
+  note: string
+  orders: number
+  spent_cents: number
+  first_purchase_at: number | null
+  last_purchase_at: number | null
+}
+export type CustomerDetail = CustomerSummary & { favorites: TopItem[]; links: Link[] }
 export type ChatMsg = { role: 'user' | 'assistant'; content: string }
 export type ChatReply = { reply: string; draft: Draft | null; choices: string[] }
 export type TopItem = { product_id: number | null; name: string; quantity: number; total_cents: number }
@@ -97,9 +114,14 @@ export const api = {
   createLink: (draft: Draft, business_name: string) =>
     req<Link>('/links', post({ draft, business_name }), true),
   links: () => req<Link[]>('/links', {}, true),
-  link: (id: string) => req<Link>(`/links/${encodeURIComponent(id)}`),
+  // Sends the merchant id so the owner also sees who paid.
+  link: (id: string) => req<Link>(`/links/${encodeURIComponent(id)}`, {}, true),
   cancel: (id: string) => req<Link>(`/links/${encodeURIComponent(id)}/cancel`, post({}), true),
-  pay: (id: string, method: PayMethod) => req<Link>(`/links/${encodeURIComponent(id)}/pay`, post({ method })),
+  pay: (id: string, method: PayMethod, payer: Payer) =>
+    req<Link>(`/links/${encodeURIComponent(id)}/pay`, post({ method, ...payer })),
+  customers: (currency: string) => req<CustomerSummary[]>(`/customers?${q({ currency })}`, {}, true),
+  customer: (id: number, currency: string) => req<CustomerDetail>(`/customers/${id}?${q({ currency })}`, {}, true),
+  updateCustomer: (id: number, patch: { name?: string; note?: string }) => req(`/customers/${id}`, post(patch), true),
   stats: (currency: string) => req<Stats>(`/stats?${q({ currency })}`, {}, true),
   products: (currency: string, days?: number) =>
     req<ProductSummary[]>(`/products?${q({ currency, days })}`, {}, true),

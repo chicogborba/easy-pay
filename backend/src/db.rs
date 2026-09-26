@@ -8,7 +8,8 @@ use sqlx::{
 };
 
 use crate::models::{
-    CatalogEntry, DayTotal, Draft, Item, Link, ProductDay, ProductDetail, ProductSummary, Stats, TopItem,
+    CatalogEntry, CustomerDetail, CustomerSummary, DayTotal, Draft, Item, Link, Payer, ProductDay, ProductDetail,
+    ProductSummary, Stats, TopItem,
 };
 
 /// Connects to Postgres. Remote databases (Heroku) require TLS; local ones don't.
@@ -25,8 +26,17 @@ pub async fn connect(url: &str) -> Result<PgPool> {
     Ok(pool)
 }
 
-/// Idempotent schema setup, run on every start.
+/// Idempotent schema setup, run on every start. An advisory lock keeps
+/// concurrent starts (tests, rolling deploys) from racing each other.
 pub async fn migrate(pool: &PgPool) -> Result<()> {
+    let mut conn = pool.acquire().await?;
+    sqlx::query("SELECT pg_advisory_lock(746_1937)").execute(&mut *conn).await?;
+    let result = run_migrations(&mut conn).await;
+    sqlx::query("SELECT pg_advisory_unlock(746_1937)").execute(&mut *conn).await?;
+    result
+}
+
+async fn run_migrations(conn: &mut PgConnection) -> Result<()> {
     for stmt in [
         "CREATE TABLE IF NOT EXISTS links (
              id            TEXT PRIMARY KEY,
@@ -61,8 +71,25 @@ pub async fn migrate(pool: &PgPool) -> Result<()> {
              product_id  BIGINT NOT NULL,
              PRIMARY KEY (merchant_id, alias_norm)
          )",
+        // People who paid a link, identified by phone (no login needed).
+        "CREATE TABLE IF NOT EXISTS customers (
+             id          BIGSERIAL PRIMARY KEY,
+             merchant_id TEXT NOT NULL,
+             name        TEXT NOT NULL,
+             phone       TEXT NOT NULL,
+             phone_norm  TEXT NOT NULL,
+             email       TEXT NOT NULL DEFAULT '',
+             note        TEXT NOT NULL DEFAULT '',
+             created_at  BIGINT NOT NULL,
+             UNIQUE (merchant_id, phone_norm)
+         )",
+        "ALTER TABLE links ADD COLUMN IF NOT EXISTS customer_id BIGINT",
+        "ALTER TABLE links ADD COLUMN IF NOT EXISTS payer_name TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE links ADD COLUMN IF NOT EXISTS payer_phone TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE links ADD COLUMN IF NOT EXISTS payer_email TEXT NOT NULL DEFAULT ''",
+        "CREATE INDEX IF NOT EXISTS idx_links_customer ON links(customer_id)",
     ] {
-        sqlx::query(stmt).execute(pool).await?;
+        sqlx::query(stmt).execute(&mut *conn).await?;
     }
     Ok(())
 }
@@ -104,11 +131,13 @@ pub fn normalize(s: &str) -> String {
 
 /* ---------------- links ---------------- */
 
-const COLS: &str = "id, business_name, items_json, currency, total_cents, note, status, created_at, paid_at, paid_method, customer";
+const COLS: &str = "id, merchant_id, business_name, items_json, currency, total_cents, note, status, created_at, \
+                    paid_at, paid_method, customer, customer_id, payer_name, payer_phone, payer_email";
 
 fn row_to_link(r: &PgRow) -> Result<Link, sqlx::Error> {
     let items_json: String = r.try_get("items_json")?;
     Ok(Link {
+        merchant_id: r.try_get("merchant_id")?,
         id: r.try_get("id")?,
         business_name: r.try_get("business_name")?,
         items: serde_json::from_str::<Vec<Item>>(&items_json).unwrap_or_default(),
@@ -120,6 +149,10 @@ fn row_to_link(r: &PgRow) -> Result<Link, sqlx::Error> {
         paid_at: r.try_get("paid_at")?,
         paid_method: r.try_get("paid_method")?,
         customer: r.try_get("customer")?,
+        customer_id: r.try_get("customer_id")?,
+        payer_name: r.try_get("payer_name")?,
+        payer_phone: r.try_get("payer_phone")?,
+        payer_email: r.try_get("payer_email")?,
     })
 }
 
@@ -179,15 +212,51 @@ pub async fn cancel_link(pool: &PgPool, merchant: &str, id: &str) -> Result<bool
     Ok(r.rows_affected() > 0)
 }
 
-/// Mock payment: flips the link to paid.
-pub async fn pay_link(pool: &PgPool, id: &str, method: &str) -> Result<bool> {
-    let r = sqlx::query("UPDATE links SET status = 'paid', paid_at = $2, paid_method = $3 WHERE id = $1 AND status = 'waiting'")
-        .bind(id)
-        .bind(now_ms())
-        .bind(method)
-        .execute(pool)
-        .await?;
-    Ok(r.rows_affected() > 0)
+/// Mock payment: flips a waiting link to paid and records who paid,
+/// creating or updating the merchant's customer (matched by phone).
+pub async fn pay_link(pool: &PgPool, id: &str, method: &str, payer: &Payer) -> Result<bool> {
+    let mut tx = pool.begin().await?;
+    let merchant: Option<String> =
+        sqlx::query_scalar("SELECT merchant_id FROM links WHERE id = $1 AND status = 'waiting' FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(merchant) = merchant else { return Ok(false) };
+
+    // Latest name/email win; the merchant's note is kept.
+    let customer_id: i64 = sqlx::query_scalar(
+        "INSERT INTO customers (merchant_id, name, phone, phone_norm, email, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (merchant_id, phone_norm) DO UPDATE
+           SET name = EXCLUDED.name, phone = EXCLUDED.phone,
+               email = CASE WHEN EXCLUDED.email = '' THEN customers.email ELSE EXCLUDED.email END
+         RETURNING id",
+    )
+    .bind(&merchant)
+    .bind(&payer.name)
+    .bind(&payer.phone)
+    .bind(&payer.phone_norm)
+    .bind(&payer.email)
+    .bind(now_ms())
+    .fetch_one(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "UPDATE links SET status = 'paid', paid_at = $2, paid_method = $3,
+                          customer_id = $4, payer_name = $5, payer_phone = $6, payer_email = $7
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(now_ms())
+    .bind(method)
+    .bind(customer_id)
+    .bind(&payer.name)
+    .bind(&payer.phone)
+    .bind(&payer.email)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(true)
 }
 
 /* ---------------- products ---------------- */
@@ -337,6 +406,107 @@ pub async fn merge_products(pool: &PgPool, merchant: &str, src: i64, dst: i64) -
     }
     tx.commit().await?;
     Ok(true)
+}
+
+/* ---------------- customers (CRM) ---------------- */
+
+struct CustomerRow {
+    id: i64,
+    name: String,
+    phone: String,
+    email: String,
+    note: String,
+}
+
+async fn customer_rows(pool: &PgPool, merchant: &str, id: Option<i64>) -> Result<Vec<CustomerRow>> {
+    let rows = sqlx::query(
+        "SELECT id, name, phone, email, note FROM customers
+         WHERE merchant_id = $1 AND ($2::BIGINT IS NULL OR id = $2)",
+    )
+    .bind(merchant)
+    .bind(id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            Ok(CustomerRow {
+                id: r.try_get("id")?,
+                name: r.try_get("name")?,
+                phone: r.try_get("phone")?,
+                email: r.try_get("email")?,
+                note: r.try_get("note")?,
+            })
+        })
+        .collect::<Result<_, sqlx::Error>>()?)
+}
+
+fn summarize(c: CustomerRow, links: &[Link], currency: &str) -> CustomerSummary {
+    let mut s = CustomerSummary {
+        id: c.id,
+        name: c.name,
+        phone: c.phone,
+        email: c.email,
+        note: c.note,
+        orders: 0,
+        spent_cents: 0,
+        first_purchase_at: None,
+        last_purchase_at: None,
+    };
+    for l in links.iter().filter(|l| l.status == "paid" && l.customer_id == Some(s.id)) {
+        let t = l.paid_at.unwrap_or(l.created_at);
+        s.orders += 1;
+        if l.currency == currency {
+            s.spent_cents += l.total_cents;
+        }
+        s.first_purchase_at = Some(s.first_purchase_at.map_or(t, |x| x.min(t)));
+        s.last_purchase_at = Some(s.last_purchase_at.map_or(t, |x| x.max(t)));
+    }
+    s
+}
+
+/// All customers with their totals, most recent buyers first.
+pub async fn customers(pool: &PgPool, merchant: &str, currency: &str) -> Result<Vec<CustomerSummary>> {
+    let links = list_links(pool, merchant).await?;
+    let mut v: Vec<CustomerSummary> = customer_rows(pool, merchant, None)
+        .await?
+        .into_iter()
+        .map(|c| summarize(c, &links, currency))
+        .collect();
+    v.sort_by(|a, b| b.last_purchase_at.cmp(&a.last_purchase_at).then(a.name.cmp(&b.name)));
+    Ok(v)
+}
+
+pub async fn customer_detail(pool: &PgPool, merchant: &str, id: i64, currency: &str) -> Result<Option<CustomerDetail>> {
+    let Some(row) = customer_rows(pool, merchant, Some(id)).await?.pop() else { return Ok(None) };
+    let links = list_links(pool, merchant).await?;
+    let names = product_names(pool, merchant).await?;
+    let summary = summarize(row, &links, currency);
+    let mine: Vec<Link> = links.into_iter().filter(|l| l.customer_id == Some(id)).collect();
+    let mut fav = Agg::default();
+    for l in mine.iter().filter(|l| l.status == "paid" && l.currency == currency) {
+        l.items.iter().for_each(|it| fav.add(it, &names));
+    }
+    Ok(Some(CustomerDetail { summary, favorites: fav.top(5), links: mine }))
+}
+
+pub async fn update_customer(
+    pool: &PgPool,
+    merchant: &str,
+    id: i64,
+    name: Option<&str>,
+    note: Option<&str>,
+) -> Result<bool> {
+    let r = sqlx::query(
+        "UPDATE customers SET name = COALESCE($3, name), note = COALESCE($4, note) WHERE id = $1 AND merchant_id = $2",
+    )
+    .bind(id)
+    .bind(merchant)
+    .bind(name)
+    .bind(note)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected() > 0)
 }
 
 /* ---------------- analytics ---------------- */
@@ -571,6 +741,12 @@ mod tests {
         Item { name: name.into(), quantity: 2, total_cents: 2000, product: product.map(Into::into), product_id: None }
     }
 
+    fn payer(name: &str, phone: &str) -> Payer {
+        crate::models::PayRequest { method: "card".into(), name: name.into(), phone: phone.into(), email: String::new() }
+            .payer()
+            .unwrap()
+    }
+
     fn draft(items: Vec<Item>) -> Draft {
         Draft { items, currency: "BRL".into(), note: String::new(), customer: String::new() }
     }
@@ -588,7 +764,7 @@ mod tests {
         assert_eq!(b.items[0].product_id, pid);
         assert_eq!(c.items[0].product_id, pid);
         for l in [&a, &b, &c] {
-            assert!(pay_link(&db, &l.id, "card").await.unwrap());
+            assert!(pay_link(&db, &l.id, "card", &payer("Ana", "+55 11 91234-5678")).await.unwrap());
         }
         let p = products(&db, &m, "BRL", 0, None).await.unwrap();
         assert_eq!(p.len(), 1);
@@ -610,8 +786,8 @@ mod tests {
         let b = create_link(&db, &m, "", &draft(vec![item("Coca-Cola", None)])).await.unwrap();
         let (src, dst) = (b.items[0].product_id.unwrap(), a.items[0].product_id.unwrap());
         assert_ne!(src, dst);
-        pay_link(&db, &a.id, "card").await.unwrap();
-        pay_link(&db, &b.id, "card").await.unwrap();
+        pay_link(&db, &a.id, "card", &payer("Ana", "11912345678")).await.unwrap();
+        pay_link(&db, &b.id, "card", &payer("Bruno", "11988887777")).await.unwrap();
         assert!(merge_products(&db, &m, src, dst).await.unwrap());
         assert!(rename_product(&db, &m, dst, "Coca-Cola 350ml").await.unwrap());
         let p = products(&db, &m, "BRL", 0, None).await.unwrap();
@@ -624,5 +800,39 @@ mod tests {
         // Cancel only works for the owner.
         assert!(!cancel_link(&db, "someone-else", &c.id).await.unwrap());
         assert!(cancel_link(&db, &m, &c.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn payments_build_the_customer_list() {
+        let Some(db) = pool().await else { return };
+        let m = merchant();
+        let a = create_link(&db, &m, "", &draft(vec![item("Bolo", None)])).await.unwrap();
+        let b = create_link(&db, &m, "", &draft(vec![item("Bolo", None)])).await.unwrap();
+        let c = create_link(&db, &m, "", &draft(vec![item("Pão", None)])).await.unwrap();
+        // Same phone written differently = same customer; newest name wins.
+        assert!(pay_link(&db, &a.id, "card", &payer("Ana", "(11) 91234-5678")).await.unwrap());
+        assert!(pay_link(&db, &b.id, "pix", &payer("Ana Souza", "11 912345678")).await.unwrap());
+        assert!(pay_link(&db, &c.id, "card", &payer("Bruno", "11988887777")).await.unwrap());
+        // A paid link can't be paid again.
+        assert!(!pay_link(&db, &a.id, "card", &payer("Xavier", "11900000000")).await.unwrap());
+
+        let list = customers(&db, &m, "BRL").await.unwrap();
+        assert_eq!(list.len(), 2);
+        let ana = list.iter().find(|c| c.name == "Ana Souza").unwrap();
+        assert_eq!(ana.orders, 2);
+        assert_eq!(ana.spent_cents, 4000);
+
+        assert!(update_customer(&db, &m, ana.id, None, Some("Gosta de pouco açúcar")).await.unwrap());
+        let d = customer_detail(&db, &m, ana.id, "BRL").await.unwrap().unwrap();
+        assert_eq!(d.summary.note, "Gosta de pouco açúcar");
+        assert_eq!(d.links.len(), 2);
+        assert_eq!(d.favorites[0].quantity, 4);
+        // Other merchants can't see or edit.
+        assert!(customer_detail(&db, "other", ana.id, "BRL").await.unwrap().is_none());
+        assert!(!update_customer(&db, "other", ana.id, Some("x"), None).await.unwrap());
+        // Payer data is hidden in the public view.
+        let l = get_link(&db, &a.id).await.unwrap().unwrap();
+        assert_eq!(l.payer_name, "Ana");
+        assert!(l.public().payer_phone.is_empty());
     }
 }

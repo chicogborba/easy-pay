@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Check, Mic, Pencil, RotateCcw, SendHorizontal, Square } from 'lucide-react'
 import { api, type ChatMsg, type Draft, type Link } from '../lib/api'
 import { useApp } from '../lib/app'
@@ -57,6 +58,16 @@ export default function ChatPage() {
   }, [entries, busy, voice])
 
   useEffect(() => () => recorder.current?.cancel(), [])
+
+  // "New link for Ana" from a customer's page: start the message for the owner.
+  const [params, setParams] = useSearchParams()
+  useEffect(() => {
+    const to = params.get('to')
+    if (!to) return
+    setText(t('linkForPrefill', { name: to }))
+    setParams({}, { replace: true })
+    setTimeout(() => inputRef.current?.focus(), 50)
+  }, [params, setParams, t])
 
   useEffect(() => {
     if (voice !== 'recording') return

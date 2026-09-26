@@ -17,11 +17,11 @@
     },
     "OPENROUTER_MODEL": {
       "description": "Model for chat and tips.",
-      "value": "google/gemini-2.5-flash-lite"
+      "value": "google/gemini-2.5-flash"
     },
     "OPENROUTER_AUDIO_MODEL": {
       "description": "Audio-capable model for voice notes.",
-      "value": "google/gemini-2.5-flash-lite"
+      "value": "google/gemini-2.5-flash"
     }
   }
 }

@@ -1,14 +1,35 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { CreditCard, Lock, Store } from 'lucide-react'
-import { api, ApiError, type Link, type PayMethod } from '../lib/api'
+import { ArrowRight, CreditCard, Lock, Store, UserRound } from 'lucide-react'
+import { api, ApiError, type Link, type Payer, type PayMethod } from '../lib/api'
 import { useApp, type T } from '../lib/app'
 import { Receipt } from '../components/Receipt'
 import { LanguagePicker } from '../components/LanguagePicker'
-import { Button, Card, cx, IconBlob, Input, Spinner, Squiggle } from '../components/ui'
+import { Button, Card, cx, IconBlob, Input, Label, Spinner, Squiggle } from '../components/ui'
 
 export function methodLabel(m: PayMethod | null, t: T) {
   return m === 'apple_pay' ? 'Apple Pay' : m === 'google_pay' ? 'Google Pay' : t('card')
+}
+
+/** Country calling code guessed from the link's currency, to prefill the phone field. */
+const DIAL: Record<string, string> = { BRL: '55', USD: '1', CAD: '1', MXN: '52', GBP: '44', INR: '91', CNY: '86', ARS: '54', COP: '57' }
+
+const PAYER_KEY = 'ep.payer'
+
+/** The customer's details are remembered on their device: no login, no typing twice. */
+function loadPayer(): Payer | null {
+  try {
+    const p = JSON.parse(localStorage.getItem(PAYER_KEY) ?? 'null')
+    return p?.name && p?.phone ? p : null
+  } catch {
+    return null
+  }
+}
+
+const validName = (n: string) => n.trim().length >= 2
+const validPhone = (p: string) => {
+  const d = p.replace(/\D/g, '').length
+  return d >= 8 && d <= 15
 }
 
 /** Public page the customer opens. Payment is MOCKED — see README to plug in Stripe. */
@@ -20,16 +41,18 @@ export default function PayPage() {
   const [showCard, setShowCard] = useState(false)
   const [justPaid, setJustPaid] = useState(false)
   const [error, setError] = useState('')
+  const [payer, setPayer] = useState<Payer | null>(loadPayer)
 
   useEffect(() => {
     api.link(id).then(setLink).catch(() => setLink(null))
   }, [id])
 
   const pay = async (method: PayMethod) => {
+    if (!payer) return
     setPaying(method)
     setError('')
     try {
-      setLink(await api.pay(id, method))
+      setLink(await api.pay(id, method, payer))
       setJustPaid(true)
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) api.link(id).then(setLink)
@@ -85,8 +108,29 @@ export default function PayPage() {
             ) : link.status === 'cancelled' ? (
               <p className="text-center text-2xl text-pencil/70">{t('linkInactive')}</p>
             ) : (
+              !payer ? (
+                <PayerForm
+                  business={link.business_name || 'Easy Pay'}
+                  dial={DIAL[link.currency] ?? ''}
+                  onDone={(p) => {
+                    setPayer(p)
+                    try {
+                      localStorage.setItem(PAYER_KEY, JSON.stringify(p))
+                    } catch {
+                      /* private mode: fine, just not remembered */
+                    }
+                  }}
+                />
+              ) : (
               <div className="space-y-4">
-                <p className="text-center font-heading text-2xl font-bold">{t('payWith')}</p>
+                <div className="flex items-center gap-3 rounded-wobblySm border-2 border-dashed border-pencil bg-white px-4 py-2">
+                  <UserRound strokeWidth={2.5} className="shrink-0 text-pen" />
+                  <p className="min-w-0 flex-1 truncate text-lg">{t('payingAs', { name: payer.name })}</p>
+                  <button onClick={() => setPayer(null)} disabled={!!paying} className="shrink-0 text-lg text-pen underline decoration-wavy underline-offset-4">
+                    {t('change')}
+                  </button>
+                </div>
+                <p className="pt-2 text-center font-heading text-2xl font-bold">{t('payWith')}</p>
 
                 <WalletButton label="Apple Pay" logo={<AppleLogo />} busy={paying === 'apple_pay'} disabled={!!paying} onClick={() => pay('apple_pay')} />
                 <WalletButton label="Google Pay" logo={<GoogleLogo />} busy={paying === 'google_pay'} disabled={!!paying} onClick={() => pay('google_pay')} />
@@ -98,6 +142,7 @@ export default function PayPage() {
                 ) : (
                   <CardForm
                     t={t}
+                    holder={payer.name}
                     amount={fmt(link.total_cents, link.currency)}
                     busy={paying === 'card'}
                     disabled={!!paying}
@@ -110,6 +155,7 @@ export default function PayPage() {
                   <Lock className="h-4 w-4" strokeWidth={2.5} /> {t('securePay')}
                 </p>
               </div>
+              )
             )}
           </section>
 
@@ -139,11 +185,56 @@ function WalletButton({ label, logo, busy, ...rest }: { label: string; logo: Rea
   )
 }
 
-function CardForm({ t, amount, busy, disabled, onPay }: { t: T; amount: string; busy: boolean; disabled: boolean; onPay: () => void }) {
+function PayerForm({ business, dial, onDone }: { business: string; dial: string; onDone: (p: Payer) => void }) {
+  const { t } = useApp()
+  const [name, setName] = useState('')
+  const [phone, setPhone] = useState(dial ? `+${dial} ` : '')
+  const [email, setEmail] = useState('')
+  const [tried, setTried] = useState(false)
+  const nameOk = validName(name)
+  const phoneOk = validPhone(phone)
+
+  return (
+    <form
+      className="space-y-4"
+      onSubmit={(e) => {
+        e.preventDefault()
+        setTried(true)
+        if (nameOk && phoneOk) onDone({ name: name.trim(), phone: phone.trim(), email: email.trim() })
+      }}
+    >
+      <div className="text-center">
+        <p className="font-heading text-2xl font-bold">{t('yourDetails')}</p>
+        <p className="text-lg text-pencil/60">{t('detailsWhy', { business })}</p>
+      </div>
+      <Card tone="paper" className="space-y-4">
+        <label className="block">
+          <Label>{t('yourName')}</Label>
+          <Input autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} maxLength={80} aria-invalid={tried && !nameOk} />
+          {tried && !nameOk && <span className="mt-1 block text-base text-marker">{t('invalidName')}</span>}
+        </label>
+        <label className="block">
+          <Label>{t('yourPhone')}</Label>
+          <Input type="tel" inputMode="tel" autoComplete="tel" value={phone} onChange={(e) => setPhone(e.target.value)} maxLength={30} aria-invalid={tried && !phoneOk} />
+          {tried && !phoneOk && <span className="mt-1 block text-base text-marker">{t('invalidPhone')}</span>}
+        </label>
+        <label className="block">
+          <Label>{t('yourEmail')}</Label>
+          <Input type="email" inputMode="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} maxLength={120} />
+        </label>
+      </Card>
+      <Button type="submit" variant="accent" size="lg" block icon={<ArrowRight strokeWidth={3} className="rtl:rotate-180" />}>
+        {t('continueToPay')}
+      </Button>
+    </form>
+  )
+}
+
+function CardForm({ t, holder, amount, busy, disabled, onPay }: { t: T; holder: string; amount: string; busy: boolean; disabled: boolean; onPay: () => void }) {
   const [num, setNum] = useState('')
   const [exp, setExp] = useState('')
   const [cvc, setCvc] = useState('')
-  const [name, setName] = useState('')
+  const [name, setName] = useState(holder)
   const valid = num.replace(/\D/g, '').length >= 15 && /^\d{2}\/\d{2}$/.test(exp) && cvc.length >= 3 && name.trim().length > 1
 
   return (

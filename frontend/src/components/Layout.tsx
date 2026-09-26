@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { MessageCirclePlus, PiggyBank, ReceiptText, Settings } from 'lucide-react'
+import { MessageCirclePlus, PiggyBank, ReceiptText, Settings, Users } from 'lucide-react'
 import { api } from '../lib/api'
 import { useApp } from '../lib/app'
 import { cx } from './ui'
@@ -14,6 +14,7 @@ export function Layout() {
   const tabs = [
     { to: '/', label: t('tabNew'), icon: MessageCirclePlus, end: true },
     { to: '/links', label: t('tabLinks'), icon: ReceiptText },
+    { to: '/customers', label: t('tabCustomers'), icon: Users },
     { to: '/money', label: t('tabMoney'), icon: PiggyBank },
   ]
 
@@ -39,7 +40,7 @@ export function Layout() {
         <Outlet />
       </main>
 
-      <nav className="grid grid-cols-3 gap-2 border-t-[3px] border-dashed border-pencil bg-paper px-3 pb-[max(env(safe-area-inset-bottom),10px)] pt-2 md:rounded-b-[28px]">
+      <nav className="grid grid-cols-4 gap-1.5 border-t-[3px] border-dashed border-pencil bg-paper px-3 pb-[max(env(safe-area-inset-bottom),10px)] pt-2 md:rounded-b-[28px]">
         {tabs.map(({ to, label, icon: Icon, end }) => (
           <NavLink
             key={to}
@@ -47,7 +48,7 @@ export function Layout() {
             end={end}
             className={({ isActive }) =>
               cx(
-                'flex flex-col items-center gap-0.5 rounded-wobblySm border-2 px-1 py-1.5 text-center text-base leading-tight transition-transform duration-100',
+                'flex min-w-0 flex-col items-center gap-0.5 rounded-wobblySm border-2 px-0.5 py-1.5 text-center text-[15px] leading-tight transition-transform duration-100',
                 isActive ? '-rotate-1 border-pencil bg-postit shadow-hardSm' : 'border-transparent text-pencil/70 hover:rotate-1',
               )
             }

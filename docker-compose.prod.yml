@@ -26,8 +26,8 @@ services:
       # Same private Docker network: no TLS needed to reach Postgres.
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/easypay?sslmode=disable
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemini-2.5-flash-lite}
-      OPENROUTER_AUDIO_MODEL: ${OPENROUTER_AUDIO_MODEL:-google/gemini-2.5-flash-lite}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemini-2.5-flash}
+      OPENROUTER_AUDIO_MODEL: ${OPENROUTER_AUDIO_MODEL:-google/gemini-2.5-flash}
       PORT: 8080
 
   # HTTPS with automatic Let's Encrypt certificates (needed for the microphone on phones).

@@ -59,6 +59,8 @@ impl Draft {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Link {
+    #[serde(skip)]
+    pub merchant_id: String,
     pub id: String,
     pub business_name: String,
     pub customer: String,
@@ -70,6 +72,22 @@ pub struct Link {
     pub created_at: i64,
     pub paid_at: Option<i64>,
     pub paid_method: Option<String>,
+    /// Who paid (filled on the checkout page). Hidden from anyone but the merchant.
+    pub customer_id: Option<i64>,
+    pub payer_name: String,
+    pub payer_phone: String,
+    pub payer_email: String,
+}
+
+impl Link {
+    /// What a visitor who is not the owner may see.
+    pub fn public(mut self) -> Self {
+        self.customer_id = None;
+        self.payer_name.clear();
+        self.payer_phone.clear();
+        self.payer_email.clear();
+        self
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +144,66 @@ pub struct CreateLinkRequest {
 #[derive(Debug, Deserialize)]
 pub struct PayRequest {
     pub method: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub phone: String,
+    #[serde(default)]
+    pub email: String,
+}
+
+/// Validated payer details.
+#[derive(Debug, Clone)]
+pub struct Payer {
+    pub name: String,
+    pub phone: String,
+    pub phone_norm: String,
+    pub email: String,
+}
+
+impl PayRequest {
+    pub fn payer(&self) -> Result<Payer, &'static str> {
+        let name: String = self.name.trim().chars().take(80).collect();
+        if name.chars().count() < 2 {
+            return Err("invalid name");
+        }
+        let phone_norm: String = self.phone.chars().filter(|c| c.is_ascii_digit()).collect();
+        if !(8..=15).contains(&phone_norm.len()) {
+            return Err("invalid phone");
+        }
+        let email = self.email.trim().to_lowercase();
+        if !email.is_empty() && (!email.contains('@') || email.len() > 120) {
+            return Err("invalid email");
+        }
+        Ok(Payer { name, phone: self.phone.trim().chars().take(30).collect(), phone_norm, email })
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct CustomerSummary {
+    pub id: i64,
+    pub name: String,
+    pub phone: String,
+    pub email: String,
+    pub note: String,
+    pub orders: u32,
+    pub spent_cents: i64,
+    pub first_purchase_at: Option<i64>,
+    pub last_purchase_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CustomerDetail {
+    #[serde(flatten)]
+    pub summary: CustomerSummary,
+    pub favorites: Vec<TopItem>,
+    pub links: Vec<Link>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateCustomerRequest {
+    pub name: Option<String>,
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
