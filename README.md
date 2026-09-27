@@ -4,7 +4,7 @@ Mobile-first web app for small sellers: describe the sale in a chat (text or voi
 
 > "2 artisan breads for 20 and 500g of jam for 14" → receipt → **Send on WhatsApp**
 
-- **Landing page** `/welcome` – first-time visitors see it before onboarding: 3D parallax hero with a looping chat demo, how it works, 1.98% fee + calculator, features, FAQ (7 languages, `frontend/src/i18n/landing.ts`).
+- **Landing page** `/welcome` – first-time visitors see it before onboarding: 3D hero (pointer/scroll-driven phone with a looping AI chat demo), how it works, what the AI does, 1.98% fee + calculator, FAQ (7 languages, `frontend/src/i18n/landing.ts`).
 - **Chat (New link)** – AI (OpenRouter) turns free text/voice into items + prices, asks short follow-up questions with tap-to-answer buttons (e.g. "a pizza and a coke for 80" → price of each, or together?), reuses usual prices, captures the customer name, then creates the link.
 - **Learns your products** – every line is linked to a product in the merchant's catalog. The AI receives the catalog and maps synonyms/plurals/other languages to the same product ("pão fermentado" = "Sourdough bread"); each wording is saved as an alias. Products can be renamed or merged manually.
 - **My links** – history with status (Waiting / Paid / Cancelled), share, cancel.
@@ -12,7 +12,7 @@ Mobile-first web app for small sellers: describe the sale in a chat (text or voi
 - **My products** – ranking by period (7d / 30d / all), product page with 14-day chart, best weekday, aliases, rename/merge.
 - **Customer page** `/p/:id` – receipt, then name + phone (email optional, no login; remembered on the customer's device), then Apple Pay / Google Pay / Card. **Payments are mocked** (no real charge).
 - **Customers (CRM)** – everyone who paid, matched by phone: search, sort (recent / top spenders / A–Z), tags (VIP, New, Missing you), WhatsApp/call buttons, total spent, average ticket, favorite products, purchase history, private notes, "new link for …".
-- Languages: English, 中文, हिन्दी, Español, العربية (RTL), Français, Português.
+- Languages (English by default until the user picks one): English, 中文, हिन्दी, Español, العربية (RTL), Français, Português.
 - Hand-drawn design system (Kalam / Patrick Hand, wobbly borders, hard shadows) — tokens in `frontend/tailwind.config.js`.
 
 ## Stack

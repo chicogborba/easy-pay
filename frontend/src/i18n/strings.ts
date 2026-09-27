@@ -1,7 +1,7 @@
 const en = {
   tabNew: 'New link',
   tabChat: "Chat",
-  assistantName: "Easy · your sales assistant",
+  assistantName: "Easy AI · your sales assistant",
   assistantStatus: "online · replies right away",
   tapToSend: "Tap to send this message",
   newChat: "New chat",
@@ -155,7 +155,7 @@ export type Strings = typeof en
 const es: Strings = {
   tabNew: 'Nuevo link',
   tabChat: "Chat",
-  assistantName: "Easy · tu asistente de ventas",
+  assistantName: "Easy IA · tu asistente de ventas",
   assistantStatus: "en línea · responde al instante",
   tapToSend: "Toca para enviar este mensaje",
   newChat: "Nuevo chat",
@@ -307,7 +307,7 @@ const es: Strings = {
 const pt: Strings = {
   tabNew: 'Novo link',
   tabChat: "Chat",
-  assistantName: "Easy · seu assistente de vendas",
+  assistantName: "Easy IA · seu assistente de vendas",
   assistantStatus: "online · responde na hora",
   tapToSend: "Toque para enviar esta mensagem",
   newChat: "Nova conversa",
@@ -459,7 +459,7 @@ const pt: Strings = {
 const zh: Strings = {
   tabNew: '新链接',
   tabChat: "聊天",
-  assistantName: "Easy · 你的销售助手",
+  assistantName: "Easy AI · 你的销售助手",
   assistantStatus: "在线 · 立即回复",
   tapToSend: "点一下发送这条消息",
   newChat: "新对话",
@@ -611,7 +611,7 @@ const zh: Strings = {
 const hi: Strings = {
   tabNew: 'नया लिंक',
   tabChat: "चैट",
-  assistantName: "Easy · आपका बिक्री सहायक",
+  assistantName: "Easy AI · आपका बिक्री सहायक",
   assistantStatus: "ऑनलाइन · तुरंत जवाब",
   tapToSend: "यह संदेश भेजने के लिए दबाइए",
   newChat: "नई चैट",
@@ -763,7 +763,7 @@ const hi: Strings = {
 const ar: Strings = {
   tabNew: 'رابط جديد',
   tabChat: "محادثة",
-  assistantName: "Easy · مساعد مبيعاتك",
+  assistantName: "Easy AI · مساعد مبيعاتك",
   assistantStatus: "متصل · يرد فورًا",
   tapToSend: "اضغط لإرسال هذه الرسالة",
   newChat: "محادثة جديدة",
@@ -915,7 +915,7 @@ const ar: Strings = {
 const fr: Strings = {
   tabNew: 'Nouveau lien',
   tabChat: "Chat",
-  assistantName: "Easy · votre assistant de vente",
+  assistantName: "Easy IA · votre assistant de vente",
   assistantStatus: "en ligne · répond tout de suite",
   tapToSend: "Touchez pour envoyer ce message",
   newChat: "Nouvelle discussion",

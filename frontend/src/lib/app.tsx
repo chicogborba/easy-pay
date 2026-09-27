@@ -4,7 +4,8 @@ import { api, type ServerConfig } from './api'
 
 export const CURRENCIES = ['USD', 'EUR', 'BRL', 'MXN', 'GBP', 'INR', 'CNY', 'ARS', 'COP', 'CAD'] as const
 
-export type Settings = { business: string; lang: LangCode; currency: string; onboarded: boolean }
+/** `langPicked`: the person chose a language themselves; until then the app is in English. */
+export type Settings = { business: string; lang: LangCode; currency: string; onboarded: boolean; langPicked?: boolean }
 
 const KEY = 'ep.settings'
 
@@ -23,12 +24,11 @@ function guessCurrency(lang: LangCode): string {
 function load(): Settings {
   try {
     const s = JSON.parse(localStorage.getItem(KEY) ?? '')
-    if (s && STRINGS[s.lang as LangCode]) return s
+    if (s && STRINGS[s.lang as LangCode]) return s.langPicked ? s : { ...s, lang: 'en' }
   } catch {
     /* first run */
   }
-  const lang = detectLang()
-  return { business: '', lang, currency: guessCurrency(lang), onboarded: false }
+  return { business: '', lang: 'en', currency: guessCurrency(detectLang()), onboarded: false }
 }
 
 export type T = (key: keyof Strings, vars?: Record<string, string>) => string
@@ -85,7 +85,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     applyDocumentLang(settings.lang)
   }, [settings])
 
-  const update = useCallback((patch: Partial<Settings>) => setSettings((s) => ({ ...s, ...patch })), [])
+  const update = useCallback(
+    (patch: Partial<Settings>) => setSettings((s) => ({ ...s, ...patch, ...(patch.lang ? { langPicked: true } : {}) })),
+    [],
+  )
 
   const toast = useCallback((msg: string) => {
     setToastMsg(msg)

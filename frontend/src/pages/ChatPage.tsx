@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Check, CheckCheck, Mic, Pencil, RotateCcw, SendHorizontal, Square } from 'lucide-react'
+import { Check, CheckCheck, Mic, Pencil, RotateCcw, SendHorizontal, Sparkles, Square } from 'lucide-react'
 import { api, type ChatMsg, type Draft, type Link } from '../lib/api'
 import { capitalize, localeOf, useApp } from '../lib/app'
 import { blobToWavBase64, browserSpeech, Recorder } from '../lib/audio'
@@ -197,7 +197,9 @@ export default function ChatPage() {
       <div className="flex items-center gap-3 border-b-2 border-dashed border-pencil/40 bg-paper/90 px-4 py-2.5 backdrop-blur-sm">
         <BotAvatar className="h-12 w-12" />
         <div className="min-w-0 flex-1 leading-tight">
-          <p className="truncate font-heading text-lg font-bold">{t('assistantName')}</p>
+          <p className="flex items-center gap-1.5 font-heading text-lg font-bold">
+            <span className="truncate">{t('assistantName')}</span>
+          </p>
           <p className="flex items-center gap-1.5 text-base text-leaf">
             <span className="relative flex h-2.5 w-2.5">
               <span className="absolute inset-0 animate-ping rounded-full bg-leaf/60" />
@@ -414,8 +416,10 @@ function BotAvatar({ className }: { className?: string }) {
           <path d="M26 15 v4" />
         </g>
         <path d="M11 26 Q 20 33 29 25" />
-        <circle cx="33" cy="9" r="2.5" fill="#ff4d4d" stroke="none" />
       </svg>
+      <span className="absolute -end-1.5 -top-1.5 flex h-[45%] w-[45%] items-center justify-center rounded-full border-2 border-pencil bg-pen text-white">
+        <Sparkles strokeWidth={3} className="h-[70%] w-[70%]" />
+      </span>
     </span>
   )
 }

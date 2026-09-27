@@ -30,7 +30,7 @@ export function useInView<T extends Element>(margin = '0px 0px -12% 0px') {
 export function Reveal({
   as: Tag = 'div',
   delay = 0,
-  tilt = -1,
+  tilt = 0,
   className,
   style,
   children,
@@ -179,21 +179,62 @@ export function useTilt<T extends HTMLElement>(max = 10) {
   return ref
 }
 
-/** Page scroll progress (px), throttled to animation frames. */
-export function useScrollY() {
-  const [y, setY] = useState(0)
+const clamp = (v: number, a = -1, b = 1) => Math.min(b, Math.max(a, v))
+
+/**
+ * Drives a 3D scene with spring-smoothed CSS variables on the element:
+ * --mx/--my (-1..1): pointer position, or a slow idle sway on touch screens;
+ * --sp (0..1): how far the element has scrolled up past the viewport top.
+ * The loop only runs while the element is on screen.
+ */
+export function useScene3D<T extends HTMLElement>() {
+  const ref = useRef<T>(null)
   useEffect(() => {
-    if (reducedMotion()) return
+    const el = ref.current
+    if (!el || reducedMotion()) return
+    const finePointer = window.matchMedia('(hover: hover) and (pointer: fine)').matches
+    let tx = 0, ty = 0, x = 0, y = 0, sp = 0
+    let lastMove = -1e9
     let raf = 0
-    const on = () => {
-      cancelAnimationFrame(raf)
-      raf = requestAnimationFrame(() => setY(window.scrollY))
+    let running = false
+
+    const onMove = (e: PointerEvent) => {
+      tx = clamp((e.clientX / window.innerWidth) * 2 - 1)
+      ty = clamp((e.clientY / window.innerHeight) * 2 - 1)
+      lastMove = performance.now()
     }
-    window.addEventListener('scroll', on, { passive: true })
-    return () => {
+    const loop = (now: number) => {
+      // No pointer for a while (or a phone): drift gently so it still feels alive.
+      if (!finePointer || now - lastMove > 2500) {
+        tx = Math.sin(now / 2400) * 0.45
+        ty = Math.cos(now / 3100) * 0.3
+      }
+      x += (tx - x) * 0.06
+      y += (ty - y) * 0.06
+      const r = el.getBoundingClientRect()
+      sp += (clamp(-r.top / Math.max(1, r.height), 0, 1) - sp) * 0.15
+      el.style.setProperty('--mx', x.toFixed(4))
+      el.style.setProperty('--my', y.toFixed(4))
+      el.style.setProperty('--sp', sp.toFixed(4))
+      raf = requestAnimationFrame(loop)
+    }
+    const start = () => {
+      if (running) return
+      running = true
+      raf = requestAnimationFrame(loop)
+    }
+    const stop = () => {
+      running = false
       cancelAnimationFrame(raf)
-      window.removeEventListener('scroll', on)
+    }
+    const io = new IntersectionObserver(([e]) => (e.isIntersecting ? start() : stop()))
+    io.observe(el)
+    if (finePointer) window.addEventListener('pointermove', onMove, { passive: true })
+    return () => {
+      stop()
+      io.disconnect()
+      window.removeEventListener('pointermove', onMove)
     }
   }, [])
-  return y
+  return ref
 }

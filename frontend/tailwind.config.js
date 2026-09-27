@@ -47,6 +47,13 @@ export default {
         toastIn: { '0%': { transform: 'translateY(-120%) rotate(-8deg)', opacity: 0 }, '55%': { transform: 'translateY(8px) rotate(3deg)', opacity: 1 }, '75%': { transform: 'translateY(-3px) rotate(0deg)' }, '100%': { transform: 'rotate(0deg)' } },
         blink: { '0%,92%,100%': { transform: 'scaleY(1)' }, '96%': { transform: 'scaleY(.1)' } },
         grow: { '0%': { transform: 'scaleY(0)' }, '100%': { transform: 'scaleY(1)' } },
+        phoneIn: {
+          '0%': { transform: 'translateY(160px) rotateX(55deg) rotateY(-35deg) rotateZ(8deg) scale(.7)', opacity: 0 },
+          '60%': { opacity: 1 },
+          '100%': { transform: 'none', opacity: 1 },
+        },
+        popIn: { '0%': { transform: 'scale(.4) translateY(12px)', opacity: 0 }, '70%': { transform: 'scale(1.06)', opacity: 1 }, '100%': { transform: 'none', opacity: 1 } },
+        twinkle: { '0%,100%': { transform: 'scale(1) rotate(0)', opacity: 1 }, '50%': { transform: 'scale(.6) rotate(45deg)', opacity: '.5' } },
       },
       animation: {
         bob: 'bob 3s ease-in-out infinite',
@@ -67,6 +74,9 @@ export default {
         toastIn: 'toastIn .6s cubic-bezier(.2,.9,.3,1) backwards',
         blink: 'blink 4s ease-in-out infinite',
         grow: 'grow .6s cubic-bezier(.2,.9,.3,1.2) backwards',
+        phoneIn: 'phoneIn 1.4s cubic-bezier(.16,1,.3,1) backwards',
+        popIn: 'popIn .45s cubic-bezier(.2,.9,.3,1.3) backwards',
+        twinkle: 'twinkle 2.2s ease-in-out infinite',
       },
     },
   },
