@@ -71,13 +71,13 @@ export default function LinksPage() {
           </Button>
         </div>
       ) : (
-        <ul className="space-y-4">
+        <ul className="stagger space-y-4">
           {shown.map((l, i) => (
             <li key={l.id}>
               <button
                 onClick={() => navigate(`/links/${l.id}`)}
                 className={cx(
-                  'flex w-full items-center gap-3 rounded-wobblyMd border-2 border-pencil bg-white p-4 text-start shadow-soft transition-transform duration-100 hover:shadow-hardSm active:scale-[.98]',
+                  'flex w-full items-center gap-3 rounded-wobblyMd border-2 border-pencil bg-white p-4 text-start shadow-soft transition-all duration-150 hover:-translate-y-1 hover:shadow-hard active:scale-[.98]',
                   i % 2 ? 'hover:rotate-1' : 'hover:-rotate-1',
                   l.status === 'cancelled' && 'opacity-60',
                 )}

@@ -42,9 +42,9 @@ export function Bars({
           >
             {b.caption && b.value > 0 && <span className="text-xs leading-none text-pencil/70 tabular-nums">{b.caption}</span>}
             <span
-              style={{ height: `${h}%`, transform: `rotate(${i % 2 ? 1.5 : -1.5}deg)` }}
+              style={{ height: `${h}%`, rotate: `${i % 2 ? 1.5 : -1.5}deg`, animationDelay: `${i * 60}ms` }}
               className={cx(
-                'block w-full rounded-wobblySm border-2 border-pencil',
+                'block w-full origin-bottom animate-grow rounded-wobblySm border-2 border-pencil transition-[height] duration-500',
                 b.value ? (b.highlight ? 'bg-marker' : 'bg-pen') : 'border-dashed bg-muted',
               )}
             />

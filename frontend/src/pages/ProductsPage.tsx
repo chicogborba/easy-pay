@@ -66,13 +66,13 @@ export default function ProductsPage() {
       ) : items.length === 0 ? (
         <p className="py-10 text-center text-2xl text-pencil/70">{t('noProducts')}</p>
       ) : (
-        <ol className="space-y-4">
+        <ol className="stagger space-y-4">
           {items.map((p, i) => (
             <li key={p.id}>
               <button
                 onClick={() => navigate(`/products/${p.id}`)}
                 className={cx(
-                  'w-full rounded-wobblyMd border-2 border-pencil bg-white p-4 text-start shadow-soft transition-transform duration-100 hover:shadow-hardSm active:scale-[.98]',
+                  'w-full rounded-wobblyMd border-2 border-pencil bg-white p-4 text-start shadow-soft transition-all duration-150 hover:-translate-y-1 hover:shadow-hard active:scale-[.98]',
                   i % 2 ? 'hover:rotate-1' : 'hover:-rotate-1',
                   p.quantity === 0 && 'opacity-60',
                 )}

@@ -24,7 +24,7 @@ export function Receipt({
           {t('forCustomer', { name: customer })}
         </p>
       )}
-      <ul className="space-y-2">
+      <ul className="stagger space-y-2">
         {items.map((it, i) => (
           <li key={i} className={`flex items-baseline gap-2 ${big ? 'text-2xl' : 'text-xl'}`}>
             {it.quantity > 1 && <span className="shrink-0 font-heading font-bold text-pen">{it.quantity}×</span>}

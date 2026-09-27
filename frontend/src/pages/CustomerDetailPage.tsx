@@ -164,7 +164,7 @@ export default function CustomerDetailPage() {
 
       <div>
         <h3 className="mb-3 font-heading text-2xl font-bold">{t('history')}</h3>
-        <ul className="space-y-3">
+        <ul className="stagger space-y-3">
           {c.links.map((l) => (
             <li key={l.id}>
               <button

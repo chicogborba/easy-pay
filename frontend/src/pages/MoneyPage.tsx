@@ -5,6 +5,12 @@ import { api, type Stats, type TopItem } from '../lib/api'
 import { capitalize, localeOf, useApp, weekdayName } from '../lib/app'
 import { Bars } from '../components/Bars'
 import { Button, Card, cx, IconBlob, Spinner, Underline } from '../components/ui'
+import { useCountUp } from '../components/motion'
+
+function CountMoney({ cents, currency }: { cents: number; currency: string }) {
+  const { fmt } = useApp()
+  return <>{fmt(Math.round(useCountUp(cents, 1100)), currency)}</>
+}
 
 export default function MoneyPage() {
   const { t, fmt, settings } = useApp()
@@ -59,16 +65,18 @@ export default function MoneyPage() {
       {/* Hero number on a sticky note */}
       <Card tone="postit" decoration="tape" tilt={-1.5} className="!px-6 !py-7 text-center">
         <p className="text-xl">{t('weekReceived')}</p>
-        <p className="font-heading text-6xl font-bold leading-tight text-marker tabular-nums">{fmt(stats.week_cents, cur)}</p>
+        <p className="font-heading text-6xl font-bold leading-tight text-marker tabular-nums">
+          <CountMoney cents={stats.week_cents} currency={cur} />
+        </p>
       </Card>
 
-      <div className="grid grid-cols-2 gap-5">
+      <div className="stagger grid grid-cols-2 gap-5">
         {tiles.map(({ label, value, icon: Icon, postit, tilt, shape, sub }) => (
           <div
             key={label}
-            style={{ transform: `rotate(${tilt}deg)` }}
+            style={{ '--tilt': `${tilt}deg` } as React.CSSProperties}
             className={cx(
-              'flex flex-col items-center gap-1 border-2 border-pencil px-3 py-4 text-center shadow-hardSm transition-transform duration-100 hover:rotate-0',
+              'flex flex-col items-center gap-1 border-2 border-pencil px-3 py-4 text-center shadow-hardSm transition-[rotate,box-shadow] duration-150 [rotate:var(--tilt)] hover:shadow-hard hover:[rotate:0deg]',
               shape,
               postit ? 'bg-postit' : 'bg-white',
             )}
@@ -220,7 +228,7 @@ function Tips({ stats }: { stats: Stats }) {
       {loading && !tips ? (
         <Spinner />
       ) : (
-        <ul className="space-y-3">
+        <ul className="stagger space-y-3">
           {(tips ?? []).map((tip) => (
             <li key={tip} className="text-xl leading-snug">
               {tip}

@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Check } from 'lucide-react'
+import { ArrowLeft, Check, Info } from 'lucide-react'
 import { CURRENCIES, useApp } from '../lib/app'
 import { Button, Card, Input, Label, Underline } from '../components/ui'
 import { LanguagePicker } from '../components/LanguagePicker'
+import { LANDING } from '../i18n/landing'
 
 export default function SettingsPage() {
   const { t, settings, update, toast } = useApp()
@@ -61,6 +62,10 @@ export default function SettingsPage() {
         }}
       >
         {t('save')}
+      </Button>
+
+      <Button variant="ghost" block onClick={() => navigate('/welcome')} icon={<Info strokeWidth={2.5} />}>
+        {LANDING[settings.lang].aboutApp}
       </Button>
     </div>
   )

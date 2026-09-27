@@ -4,6 +4,7 @@ Mobile-first web app for small sellers: describe the sale in a chat (text or voi
 
 > "2 artisan breads for 20 and 500g of jam for 14" → receipt → **Send on WhatsApp**
 
+- **Landing page** `/welcome` – first-time visitors see it before onboarding: 3D parallax hero with a looping chat demo, how it works, 1.98% fee + calculator, features, FAQ (7 languages, `frontend/src/i18n/landing.ts`).
 - **Chat (New link)** – AI (OpenRouter) turns free text/voice into items + prices, asks short follow-up questions with tap-to-answer buttons (e.g. "a pizza and a coke for 80" → price of each, or together?), reuses usual prices, captures the customer name, then creates the link.
 - **Learns your products** – every line is linked to a product in the merchant's catalog. The AI receives the catalog and maps synonyms/plurals/other languages to the same product ("pão fermentado" = "Sourdough bread"); each wording is saved as an alias. Products can be renamed or merged manually.
 - **My links** – history with status (Waiting / Paid / Cancelled), share, cancel.

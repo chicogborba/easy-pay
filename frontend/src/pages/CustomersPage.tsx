@@ -93,13 +93,13 @@ export default function CustomersPage() {
           <p className="mt-4 text-2xl text-pencil/70">{t('noCustomers')}</p>
         </div>
       ) : (
-        <ul className="space-y-4">
+        <ul className="stagger space-y-4">
           {shown.map((c, i) => (
             <li key={c.id}>
               <button
                 onClick={() => navigate(`/customers/${c.id}`)}
                 className={cx(
-                  'flex w-full items-center gap-3 rounded-wobblyMd border-2 border-pencil bg-white p-4 text-start shadow-soft transition-transform duration-100 hover:shadow-hardSm active:scale-[.98]',
+                  'flex w-full items-center gap-3 rounded-wobblyMd border-2 border-pencil bg-white p-4 text-start shadow-soft transition-all duration-150 hover:-translate-y-1 hover:shadow-hard active:scale-[.98]',
                   i % 2 ? 'hover:rotate-1' : 'hover:-rotate-1',
                 )}
               >

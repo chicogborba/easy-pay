@@ -15,11 +15,19 @@ import CustomersPage from './pages/CustomersPage'
 import CustomerDetailPage from './pages/CustomerDetailPage'
 import PayPage from './pages/PayPage'
 import OnboardingPage from './pages/OnboardingPage'
+import LandingPage from './pages/LandingPage'
 
+/** First visit: the landing page explains the product, then onboarding. */
 function MerchantApp() {
   const { settings } = useApp()
-  if (!settings.onboarded) return <OnboardingPage />
+  if (!settings.onboarded) return <Navigate to="/welcome" replace />
   return <Layout />
+}
+
+function Onboarding() {
+  const { settings } = useApp()
+  if (settings.onboarded) return <Navigate to="/" replace />
+  return <OnboardingPage />
 }
 
 createRoot(document.getElementById('root')!).render(
@@ -29,6 +37,9 @@ createRoot(document.getElementById('root')!).render(
         <Routes>
           {/* Public customer checkout */}
           <Route path="/p/:id" element={<PayPage />} />
+          {/* Public landing page + first-run setup */}
+          <Route path="/welcome" element={<LandingPage />} />
+          <Route path="/onboarding" element={<Onboarding />} />
           {/* Merchant app */}
           <Route element={<MerchantApp />}>
             <Route index element={<ChatPage />} />
