@@ -80,6 +80,7 @@ The browser records audio, converts it to 16 kHz mono WAV, and `POST /api/transc
 |---|---|---|
 | GET | `/api/config` | `{ ai, voice }` |
 | POST | `/api/chat` | `{ messages, lang, currency }` → `{ reply, draft }` |
+| POST | `/api/chat/stream` | same body; NDJSON: `{delta}` per reply token from OpenRouter, then `{done: {reply, draft, choices}}` |
 | POST | `/api/transcribe` | `{ audio_base64, lang }` → `{ text }` |
 | GET/POST | `/api/links` | merchant (`X-Merchant-Id` header) |
 | GET | `/api/links/:id` | public (payer data only for the owner) |

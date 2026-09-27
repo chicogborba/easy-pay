@@ -78,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
     let api = Router::new()
         .route("/config", get(config))
         .route("/chat", post(chat))
+        .route("/chat/stream", post(chat_stream))
         .route("/transcribe", post(transcribe))
         .route("/links", get(list_links).post(create_link))
         .route("/links/:id", get(get_link))
@@ -132,6 +133,44 @@ async fn chat(
         Err(_) => Vec::new(),
     };
     Ok(Json(s.ai.chat(&req.messages, &req.lang, &req.currency, &catalog).await))
+}
+
+/// Same as `/chat`, but as newline-delimited JSON: `{"delta": "..."}` for each piece of
+/// the reply while the model writes it, then `{"done": ChatResponse}`.
+async fn chat_stream(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<ChatRequest>,
+) -> Result<Response, ApiError> {
+    if req.messages.is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "empty conversation".into()));
+    }
+    let catalog = match merchant_id(&headers) {
+        Ok(m) => db::catalog(&s.db, &m).await?,
+        Err(_) => Vec::new(),
+    };
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, std::convert::Infallible>>();
+    tokio::spawn(async move {
+        let delta_tx = tx.clone();
+        let res = s
+            .ai
+            .chat_stream(&req.messages, &req.lang, &req.currency, &catalog, move |d| {
+                let _ = delta_tx.send(Ok(format!("{}\n", json!({ "delta": d }))));
+            })
+            .await;
+        let _ = tx.send(Ok(format!("{}\n", json!({ "done": res }))));
+    });
+    let body = axum::body::Body::from_stream(tokio_stream::wrappers::UnboundedReceiverStream::new(rx));
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "application/x-ndjson"),
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
+            // Tell proxies not to buffer, so tokens reach the phone as they come.
+            (axum::http::HeaderName::from_static("x-accel-buffering"), "no"),
+        ],
+        body,
+    )
+        .into_response())
 }
 
 async fn transcribe(State(s): State<AppState>, Json(req): Json<TranscribeRequest>) -> ApiResult<TranscribeResponse> {

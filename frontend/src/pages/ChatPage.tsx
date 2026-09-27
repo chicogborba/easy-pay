@@ -10,7 +10,8 @@ import { Arrow, Button, Card, cx, Spinner } from '../components/ui'
 import { Confetti, TypingDots, WriteOn } from '../components/motion'
 
 type Entry =
-  | { kind: 'text'; role: 'user' | 'assistant'; text: string; choices?: string[] }
+  // `chunks`: pieces of a reply still streaming in; `streamed`: it arrived token by token.
+  | { kind: 'text'; role: 'user' | 'assistant'; text: string; choices?: string[]; chunks?: string[]; streamed?: boolean }
   | { kind: 'draft'; draft: Draft; state: 'open' | 'done' }
   | { kind: 'link'; link: Link }
 
@@ -19,7 +20,9 @@ const MAX_RECORD_MS = 60_000
 
 function loadEntries(): Entry[] {
   try {
-    return JSON.parse(sessionStorage.getItem(STORE) ?? '[]')
+    const saved: Entry[] = JSON.parse(sessionStorage.getItem(STORE) ?? '[]')
+    // A reply cut off mid-stream (page reloaded) is shown as plain text.
+    return saved.map((e) => (e.kind === 'text' && e.chunks ? { ...e, chunks: undefined, streamed: true } : e))
   } catch {
     return []
   }
@@ -90,15 +93,34 @@ export default function ChatPage() {
     ]
     setEntries(next)
     setBusy('thinking')
+    const isStreaming = (e?: Entry) => e?.kind === 'text' && !!e.chunks
+    let gotTokens = false
+    // Tokens from the model land in one growing bubble as they arrive.
+    const onDelta = (piece: string) => {
+      gotTokens = true
+      setEntries((cur) => {
+        const last = cur[cur.length - 1]
+        if (last?.kind === 'text' && last.chunks) return [...cur.slice(0, -1), { ...last, text: last.text + piece, chunks: [...last.chunks, piece] }]
+        return [...cur, { kind: 'text', role: 'assistant', text: piece, chunks: [piece] }]
+      })
+    }
     try {
-      const res = await api.chat(toHistory(next), settings.lang, settings.currency)
-      setEntries((cur) => [
-        ...cur,
-        ...(res.reply ? [{ kind: 'text', role: 'assistant', text: res.reply, choices: res.choices } as Entry] : []),
-        ...(res.draft ? [{ kind: 'draft', draft: res.draft, state: 'open' } as Entry] : []),
-      ])
+      const history = toHistory(next)
+      const res = await api.chatStream(history, settings.lang, settings.currency, onDelta).catch((err) => {
+        if (gotTokens) throw err
+        return api.chat(history, settings.lang, settings.currency)
+      })
+      setEntries((cur) => {
+        const streamed = isStreaming(cur[cur.length - 1])
+        const base = streamed ? cur.slice(0, -1) : cur
+        return [
+          ...base,
+          ...(res.reply ? [{ kind: 'text', role: 'assistant', text: res.reply, choices: res.choices, streamed } as Entry] : []),
+          ...(res.draft ? [{ kind: 'draft', draft: res.draft, state: 'open' } as Entry] : []),
+        ]
+      })
     } catch {
-      setEntries((cur) => [...cur, { kind: 'text', role: 'assistant', text: t('errorGeneric') }])
+      setEntries((cur) => [...cur.filter((e) => !(e.kind === 'text' && e.chunks)), { kind: 'text', role: 'assistant', text: t('errorGeneric') }])
     } finally {
       setBusy(null)
     }
@@ -265,7 +287,7 @@ export default function ChatPage() {
           if (e.kind === 'text')
             return (
               <div key={i}>
-                <Bubble role={e.role} fresh={fresh}>
+                <Bubble role={e.role} fresh={fresh && !e.streamed} chunks={e.chunks}>
                   {e.text}
                 </Bubble>
                 {/* Quick answers for the AI's question: only on the latest message. */}
@@ -328,7 +350,7 @@ export default function ChatPage() {
           )
         })}
 
-        {busy === 'thinking' && (
+        {busy === 'thinking' && !(entries[entries.length - 1]?.kind === 'text' && (entries[entries.length - 1] as { chunks?: string[] }).chunks) && (
           <Bubble role="assistant">
             <TypingDots className="text-pencil/70" />
             <span className="sr-only">{t('thinking')}</span>
@@ -424,7 +446,7 @@ function BotAvatar({ className }: { className?: string }) {
   )
 }
 
-function Bubble({ role, fresh, children }: { role: 'user' | 'assistant'; fresh?: boolean; children: React.ReactNode }) {
+function Bubble({ role, fresh, chunks, children }: { role: 'user' | 'assistant'; fresh?: boolean; chunks?: string[]; children: React.ReactNode }) {
   const mine = role === 'user'
   return (
     <div className={cx('flex items-end gap-2', mine ? 'justify-end' : 'justify-start', fresh && (mine ? 'animate-inRight' : 'animate-inLeft'))}>
@@ -435,7 +457,20 @@ function Bubble({ role, fresh, children }: { role: 'user' | 'assistant'; fresh?:
           mine ? 'tail-right rotate-1 rounded-wobblySm bg-pen text-white' : 'tail-left -rotate-1 rounded-wobblyMd bg-white',
         )}
       >
-        {fresh && !mine && typeof children === 'string' ? <WriteOn text={children} /> : children}
+        {chunks ? (
+          <>
+            {chunks.map((c, i) => (
+              <span key={i} className="animate-token">
+                {c}
+              </span>
+            ))}
+            <span aria-hidden className="ms-1 inline-block h-5 w-2.5 translate-y-1 animate-pulse rounded-sm bg-pen/60" />
+          </>
+        ) : fresh && !mine && typeof children === 'string' ? (
+          <WriteOn text={children} />
+        ) : (
+          children
+        )}
         {mine && (
           <CheckCheck aria-hidden strokeWidth={2.5} className="-mb-1 ms-2 inline-block h-4 w-4 align-baseline text-white/70" />
         )}

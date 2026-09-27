@@ -67,7 +67,10 @@ export type ProductDetail = Omit<ProductSummary, 'id'> & {
 export type ServerConfig = { ai: boolean; voice: boolean }
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
     super(message)
   }
 }
@@ -105,31 +108,60 @@ function q(params: Record<string, string | number | undefined>) {
 
 const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) })
 
+/**
+ * Chat with the reply streamed token by token (newline-delimited JSON).
+ * `onDelta` gets each new piece of the reply text; resolves with the full answer.
+ * Falls back to the plain endpoint when streaming isn't available.
+ */
+async function chatStream(messages: ChatMsg[], lang: string, currency: string, onDelta: (text: string) => void): Promise<ChatReply> {
+  const res = await fetch('/api/chat/stream', {
+    ...post({ messages, lang, currency }),
+    headers: { 'Content-Type': 'application/json', 'X-Merchant-Id': merchantId() },
+  })
+  if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ''))
+  if (!res.body) return api.chat(messages, lang, currency)
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let done: ChatReply | null = null
+  for (;;) {
+    const { value, done: end } = await reader.read()
+    if (value) buf += decoder.decode(value, { stream: true })
+    let nl: number
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim()
+      buf = buf.slice(nl + 1)
+      if (!line) continue
+      const msg = JSON.parse(line) as { delta?: string; done?: ChatReply }
+      if (msg.delta) onDelta(msg.delta)
+      if (msg.done) done = msg.done
+    }
+    if (end) break
+  }
+  if (!done) throw new Error('stream ended early')
+  return done
+}
+
 export const api = {
   config: () => req<ServerConfig>('/config'),
-  chat: (messages: ChatMsg[], lang: string, currency: string) =>
-    req<ChatReply>('/chat', post({ messages, lang, currency }), true),
-  transcribe: (audio_base64: string, lang: string) =>
-    req<{ text: string }>('/transcribe', post({ audio_base64, lang })),
-  createLink: (draft: Draft, business_name: string) =>
-    req<Link>('/links', post({ draft, business_name }), true),
+  chat: (messages: ChatMsg[], lang: string, currency: string) => req<ChatReply>('/chat', post({ messages, lang, currency }), true),
+  chatStream,
+  transcribe: (audio_base64: string, lang: string) => req<{ text: string }>('/transcribe', post({ audio_base64, lang })),
+  createLink: (draft: Draft, business_name: string) => req<Link>('/links', post({ draft, business_name }), true),
   links: () => req<Link[]>('/links', {}, true),
   // Sends the merchant id so the owner also sees who paid.
   link: (id: string) => req<Link>(`/links/${encodeURIComponent(id)}`, {}, true),
   cancel: (id: string) => req<Link>(`/links/${encodeURIComponent(id)}/cancel`, post({}), true),
-  pay: (id: string, method: PayMethod, payer: Payer) =>
-    req<Link>(`/links/${encodeURIComponent(id)}/pay`, post({ method, ...payer })),
+  pay: (id: string, method: PayMethod, payer: Payer) => req<Link>(`/links/${encodeURIComponent(id)}/pay`, post({ method, ...payer })),
   customers: (currency: string) => req<CustomerSummary[]>(`/customers?${q({ currency })}`, {}, true),
   customer: (id: number, currency: string) => req<CustomerDetail>(`/customers/${id}?${q({ currency })}`, {}, true),
   updateCustomer: (id: number, patch: { name?: string; note?: string }) => req(`/customers/${id}`, post(patch), true),
   stats: (currency: string) => req<Stats>(`/stats?${q({ currency })}`, {}, true),
-  products: (currency: string, days?: number) =>
-    req<ProductSummary[]>(`/products?${q({ currency, days })}`, {}, true),
+  products: (currency: string, days?: number) => req<ProductSummary[]>(`/products?${q({ currency, days })}`, {}, true),
   product: (id: number, currency: string) => req<ProductDetail>(`/products/${id}?${q({ currency })}`, {}, true),
   renameProduct: (id: number, name: string) => req(`/products/${id}/rename`, post({ name }), true),
   mergeProduct: (id: number, into_id: number) => req(`/products/${id}/merge`, post({ into_id }), true),
-  insights: (lang: string, currency: string) =>
-    req<{ tips: string[] }>('/insights', post({ lang, currency, tz_offset: tzOffset() }), true),
+  insights: (lang: string, currency: string) => req<{ tips: string[] }>('/insights', post({ lang, currency, tz_offset: tzOffset() }), true),
 }
 
 export const payUrl = (id: string) => `${window.location.origin}/p/${id}`

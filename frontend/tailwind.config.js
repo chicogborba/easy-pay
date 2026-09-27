@@ -53,6 +53,8 @@ export default {
           '100%': { transform: 'none', opacity: 1 },
         },
         popIn: { '0%': { transform: 'scale(.4) translateY(12px)', opacity: 0 }, '70%': { transform: 'scale(1.06)', opacity: 1 }, '100%': { transform: 'none', opacity: 1 } },
+        highlight: { '0%': { transform: 'scaleX(0) rotate(-1.5deg)' }, '100%': { transform: 'scaleX(1) rotate(-1.5deg)' } },
+        token: { '0%': { opacity: 0, filter: 'blur(4px)' }, '100%': { opacity: 1, filter: 'none' } },
         twinkle: { '0%,100%': { transform: 'scale(1) rotate(0)', opacity: 1 }, '50%': { transform: 'scale(.6) rotate(45deg)', opacity: '.5' } },
       },
       animation: {
@@ -77,6 +79,8 @@ export default {
         phoneIn: 'phoneIn 1.4s cubic-bezier(.16,1,.3,1) backwards',
         popIn: 'popIn .45s cubic-bezier(.2,.9,.3,1.3) backwards',
         twinkle: 'twinkle 2.2s ease-in-out infinite',
+        token: 'token .5s ease-out backwards',
+        highlight: 'highlight .7s cubic-bezier(.6,0,.2,1) .45s backwards',
       },
     },
   },

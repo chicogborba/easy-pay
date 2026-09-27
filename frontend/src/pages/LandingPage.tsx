@@ -1,11 +1,11 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowRight, Check, ChevronDown, MessageCircleQuestion, Mic, Plus, ReceiptText, Send, Sparkles, Tags } from 'lucide-react'
+import { ArrowRight, Check, ChevronDown, Copy, Link2, Mic, Plus, Send } from 'lucide-react'
 import { LANGS, type LangCode } from '../i18n/strings'
 import { FEE_RATE, LANDING, type LandingStrings } from '../i18n/landing'
 import { localeOf, useApp } from '../lib/app'
 import { Button, cx, Squiggle } from '../components/ui'
-import { Confetti, Reveal, TypingDots, useCountUp, useInView, useScene3D, useTilt, WriteOn } from '../components/motion'
+import { Confetti, Reveal, TypingDots, useCountUp, useInView, useScene3D, WriteOn } from '../components/motion'
 import { WhatsAppLogo } from '../components/ShareActions'
 
 /* ---------- helpers ---------- */
@@ -23,6 +23,9 @@ function useLanding() {
 
 const scrollToId = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 const reduced = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+const host = () => window.location.host
+/** A made-up link id so the demo shows what a real link looks like. */
+const DEMO_LINK = 'p/k7Q2x'
 
 /** Steps through `durations` in a loop while `active`. Returns the current step. */
 function useLoop(durations: number[], active = true) {
@@ -36,31 +39,18 @@ function useLoop(durations: number[], active = true) {
   return step
 }
 
-/** Renders text, highlighting *marked* words as the AI (blue pen, hand-drawn circle, sparkle). */
+/** Text with *marked* words painted over with a highlighter. */
 function Marked({ text }: { text: string }) {
   return (
     <>
       {text.split('*').map((part, i) =>
         i % 2 ? (
-          <span key={i} className={cx('relative inline-block px-1 text-pen', part.length < 12 && 'whitespace-nowrap')}>
-            {part}
-            <svg
+          <span key={i} className="relative inline-block text-marker">
+            <span
               aria-hidden
-              viewBox="0 0 120 60"
-              preserveAspectRatio="none"
-              className="pointer-events-none absolute -inset-x-2 -inset-y-1 h-[calc(100%+0.5rem)] w-[calc(100%+1rem)]"
-            >
-              <path
-                d="M62 6 C 100 4, 116 18, 114 32 C 112 50, 80 56, 55 55 C 22 54, 5 44, 7 29 C 9 14, 34 5, 70 8"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="3.5"
-                strokeLinecap="round"
-                className="animate-draw [animation-delay:.7s]"
-                style={{ strokeDasharray: 340, '--len': 340 } as CSSProperties}
-              />
-            </svg>
-            <Sparkles aria-hidden strokeWidth={2.5} className="absolute -end-5 -top-3 h-6 w-6 animate-twinkle text-pen md:h-8 md:w-8" />
+              className="absolute inset-x-[-4px] bottom-[6%] -z-10 h-[42%] origin-left -rotate-[1.5deg] animate-highlight rounded-wobblySm bg-postit rtl:origin-right"
+            />
+            {part}
           </span>
         ) : (
           part
@@ -70,18 +60,8 @@ function Marked({ text }: { text: string }) {
   )
 }
 
-function Kicker({ children, ai }: { children: ReactNode; ai?: boolean }) {
-  return (
-    <p
-      className={cx(
-        'mb-4 inline-flex items-center gap-2 rounded-wobblySm border-2 px-3 py-1 text-lg',
-        ai ? 'border-pen bg-pen text-white' : 'border-pencil bg-white',
-      )}
-    >
-      {ai && <Sparkles strokeWidth={2.5} className="h-4 w-4" />}
-      {children}
-    </p>
-  )
+function Kicker({ children }: { children: ReactNode }) {
+  return <p className="mb-4 inline-flex items-center gap-2 rounded-wobblySm border-2 border-pencil bg-white px-3 py-1 text-lg">{children}</p>
 }
 
 /* ---------- page ---------- */
@@ -99,6 +79,7 @@ export default function LandingPage() {
     }
   })
 
+  // The live demo is the app itself.
   const start = () => navigate(settings.onboarded ? '/' : '/onboarding')
 
   return (
@@ -106,7 +87,6 @@ export default function LandingPage() {
       <Nav onStart={start} />
       <Hero onStart={start} />
       <HowItWorks />
-      <AiSection />
       <Pricing />
       <Faq />
       <FinalCta onStart={start} />
@@ -135,7 +115,6 @@ function Nav({ onStart }: { onStart: () => void }) {
 
   const links: [string, keyof LandingStrings][] = [
     ['how', 'navHow'],
-    ['ai', 'navAi'],
     ['price', 'navPrice'],
     ['faq', 'navFaq'],
   ]
@@ -183,8 +162,12 @@ function Nav({ onStart }: { onStart: () => void }) {
           </select>
           <ChevronDown aria-hidden strokeWidth={3} className="pointer-events-none absolute end-2 top-1/2 h-4 w-4 -translate-y-1/2" />
         </label>
-        <Button onClick={onStart} className="hidden !min-h-[44px] !text-lg sm:inline-flex">
-          {l('openApp')}
+        <Button variant="accent" onClick={onStart} className="hidden !min-h-[44px] !text-lg sm:inline-flex">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="absolute inset-0 animate-ping rounded-full bg-white/70" />
+            <span className="relative h-2.5 w-2.5 rounded-full bg-white" />
+          </span>
+          {l('demoBtn')}
         </Button>
       </div>
     </header>
@@ -199,18 +182,21 @@ function Hero({ onStart }: { onStart: () => void }) {
     <section className="mx-auto grid max-w-6xl items-center gap-2 px-5 pb-8 pt-6 md:grid-cols-[1.1fr_1fr] md:gap-6 md:pb-20 md:pt-14">
       <div className="relative z-10">
         <div className="animate-rise">
-          <Kicker ai>{l('heroKicker')}</Kicker>
+          <Kicker>
+            <Link2 strokeWidth={2.5} className="h-5 w-5 text-marker" />
+            {l('heroKicker')}
+          </Kicker>
         </div>
         <h1 className="font-heading text-[2.75rem] font-bold leading-[1.05] tracking-tight sm:text-6xl lg:text-7xl">
           <span className="block animate-rise [animation-delay:.08s]">{l('heroTitle1')}</span>
-          <span className="block animate-rise [animation-delay:.2s]">
+          <span className="isolate block animate-rise [animation-delay:.2s]">
             <Marked text={l('heroTitle2')} />
           </span>
         </h1>
         <p className="mt-6 max-w-lg animate-rise text-xl leading-relaxed text-pencil/70 [animation-delay:.35s] md:text-2xl">{l('heroSub')}</p>
         <div className="mt-8 flex animate-rise flex-wrap items-center gap-3 [animation-delay:.5s]">
           <Button variant="accent" size="lg" onClick={onStart} className="group">
-            {l('ctaStart')}
+            {l('ctaDemo')}
             <ArrowRight
               strokeWidth={3}
               className="transition-transform duration-200 group-hover:translate-x-1.5 rtl:rotate-180 rtl:group-hover:-translate-x-1.5"
@@ -232,23 +218,23 @@ function Hero({ onStart }: { onStart: () => void }) {
 
 /* ---------- 3D scene ---------- */
 
-// 0 idle · 1 typing · 2 sent · 3 AI reading · 4 receipt · 5 tap create · 6 link sent · 7 paid
-const DEMO_STEPS = [800, 1700, 450, 1500, 2100, 500, 2000, 2900]
+// 0 idle · 1 typing · 2 sent · 3 dots · 4 receipt · 5 tap "create" · 6 link ready · 7 paid
+const DEMO_STEPS = [450, 1000, 250, 550, 1100, 300, 1700, 2000]
 
 function HeroScene() {
-  const { l } = useLanding()
   const { fmt } = useApp()
+  const { l } = useLanding()
   const ref = useScene3D<HTMLDivElement>()
   const phase = useLoop(DEMO_STEPS)
   const total = fmt(3600)
 
-  // Pointer (--mx/--my) + scroll (--sp) → rotation. Scroll tips the phone back like it's being laid down.
+  // Pointer (--mx/--my) + scroll (--sp) → rotation. Scrolling tips the phone back.
   const scene: CSSProperties = {
     transform:
       'translateY(calc(var(--sp, 0) * 120px)) ' +
-      'rotateX(calc(10deg - var(--my, 0) * 10deg + var(--sp, 0) * 32deg)) ' +
-      'rotateY(calc(-18deg + var(--mx, 0) * 22deg - var(--sp, 0) * 10deg)) ' +
-      'rotateZ(calc(2deg + var(--mx, 0) * -2deg))',
+      'rotateX(calc(8deg - var(--my, 0) * 10deg + var(--sp, 0) * 30deg)) ' +
+      'rotateY(calc(-16deg + var(--mx, 0) * 22deg - var(--sp, 0) * 10deg)) ' +
+      'rotateZ(calc(1.5deg + var(--mx, 0) * -2deg))',
   }
   const float = (z: number, amp: number): CSSProperties => ({
     transform: `translate3d(calc(var(--mx, 0) * ${amp}px), calc(var(--my, 0) * ${amp * 0.7}px), ${z}px)`,
@@ -259,54 +245,38 @@ function HeroScene() {
       <div className="preserve-3d absolute inset-0 scale-[.8] sm:scale-100">
         <div className="preserve-3d absolute inset-0" style={scene}>
           <div className="preserve-3d absolute inset-0 animate-phoneIn">
-            {/* Backdrop blob, far behind */}
-            <div
-              className="absolute left-1/2 top-1/2 h-[430px] w-[430px] -translate-x-1/2 -translate-y-1/2"
-              style={{ transform: 'translate(-50%, -50%) translateZ(-160px)' }}
-            >
+            <div className="absolute left-1/2 top-1/2 h-[430px] w-[430px]" style={{ transform: 'translate(-50%, -50%) translateZ(-160px)' }}>
               <div className="h-full w-full rounded-blob bg-postit" />
             </div>
 
             <Phone3D phase={phase} />
 
-            {/* Fee sticker */}
             <div className="absolute start-0 top-4 sm:-start-4" style={float(130, 16)}>
               <FeeSticker />
             </div>
 
-            {/* The AI "thought": what it understood from the message */}
-            <div className="absolute -end-4 top-[40%] sm:-end-10" style={float(100, 22)}>
-              {phase === 3 && (
-                <AiCard key="reading">
-                  <span className="flex items-center gap-2">
-                    {l('demoReading')} <TypingDots className="text-pen" />
-                  </span>
-                </AiCard>
-              )}
-              {phase >= 4 && phase <= 6 && (
-                <AiCard key="understood" title={l('demoUnderstood')}>
-                  <span className="mt-1.5 flex flex-col gap-1.5">
-                    <Chip delay={120}>2× {l('demoItem1')}</Chip>
-                    <Chip delay={240}>1× {l('demoItem2')}</Chip>
-                    <span className="animate-popIn font-heading text-xl font-bold text-marker [animation-delay:.4s]">= {total}</span>
-                  </span>
-                </AiCard>
-              )}
-            </div>
-
-            {/* WhatsApp: link sent */}
-            {phase === 6 && (
-              <div className="absolute bottom-16 start-2 sm:-start-6" style={float(120, 18)}>
-                <div className="flex animate-popIn items-center gap-2 rounded-wobblySm border-2 border-pencil bg-[#25D366] px-3 py-2 font-heading text-lg font-bold text-white shadow-hard">
-                  <WhatsAppLogo className="h-6 w-6 fill-white" />
-                  <Check strokeWidth={3.5} className="h-5 w-5" />
+            {/* The generated link flies out of the phone */}
+            {phase >= 6 && (
+              <div className="absolute -end-2 top-[46%] sm:-end-12" style={float(150, 24)}>
+                <div className="animate-popIn rounded-wobblyMd border-[3px] border-pencil bg-white px-4 py-3 shadow-hardLg">
+                  <p className="flex items-center gap-1.5 text-base text-pencil/60">
+                    <Link2 strokeWidth={2.5} className="h-4 w-4 text-marker" /> {l('demoLink')}
+                  </p>
+                  <p className="font-heading text-lg font-bold text-pen underline decoration-2 underline-offset-4">
+                    {host()}/{DEMO_LINK}
+                  </p>
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <span className="font-heading text-2xl font-bold text-marker">{total}</span>
+                    <span className="flex items-center gap-1.5 rounded-wobblySm border-2 border-pencil bg-[#25D366] px-2.5 py-1 text-base font-bold text-white">
+                      <WhatsAppLogo className="h-4 w-4 fill-white" /> <Send strokeWidth={2.5} className="h-3.5 w-3.5" />
+                    </span>
+                  </div>
                 </div>
               </div>
             )}
 
-            {/* Paid notification pops out of the screen */}
             {phase === 7 && (
-              <div className="absolute -end-2 top-10 sm:-end-8" style={float(170, 26)}>
+              <div className="absolute -start-2 bottom-16 sm:-start-8" style={float(170, 26)}>
                 <div className="relative animate-popIn rounded-wobbly border-2 border-pencil bg-leaf px-4 py-2.5 font-heading text-xl font-bold text-white shadow-hard">
                   💰 {l('demoToast', { amount: total })}
                   <Confetti fire="paid" count={20} spread={130} />
@@ -317,29 +287,6 @@ function HeroScene() {
         </div>
       </div>
     </div>
-  )
-}
-
-function AiCard({ title, children }: { title?: string; children: ReactNode }) {
-  return (
-    <div className="animate-popIn rounded-wobblyMd border-2 border-pen bg-white px-4 py-3 text-lg text-pencil shadow-[4px_4px_0_0_#2d5da1]">
-      <span className="flex items-center gap-1.5 font-heading font-bold text-pen">
-        <Sparkles strokeWidth={2.5} className="h-5 w-5 animate-twinkle" />
-        {title ?? 'AI'}
-      </span>
-      {children}
-    </div>
-  )
-}
-
-function Chip({ delay, children }: { delay: number; children: ReactNode }) {
-  return (
-    <span
-      className="animate-popIn self-start whitespace-nowrap rounded-wobblySm border-2 border-pencil bg-postit px-2 py-0.5 text-base"
-      style={{ animationDelay: `${delay}ms` }}
-    >
-      {children}
-    </span>
   )
 }
 
@@ -371,16 +318,13 @@ function FeeSticker() {
 function Phone3D({ phase }: { phase: number }) {
   return (
     <div className="preserve-3d absolute left-1/2 top-1/2 -ml-[140px] -mt-[285px] h-[570px] w-[280px]">
-      {/* cast shadow */}
       <div className="absolute inset-0 rounded-[46px] bg-pencil/15" style={{ transform: 'translate3d(34px, 30px, -70px)' }} />
-      {/* body thickness */}
       {Array.from({ length: 12 }, (_, i) => (
         <div key={i} className="absolute inset-0 rounded-[46px] bg-pencil" style={{ transform: `translateZ(${-(i + 1) * 1.5}px)` }} />
       ))}
       <div className="absolute inset-0 rounded-[46px] border-[3px] border-pencil bg-pencil p-2.5">
         <PhoneScreen phase={phase} />
       </div>
-      {/* glare that slides with the pointer */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-2.5 rounded-[36px]"
@@ -405,14 +349,9 @@ function PhoneScreen({ phase }: { phase: number }) {
     <div className="paper-bg relative flex h-full flex-col overflow-hidden rounded-[36px]">
       <div className="absolute left-1/2 top-2 z-20 h-5 w-20 -translate-x-1/2 rounded-full bg-pencil" />
       <div className="flex items-center gap-2 border-b-2 border-dashed border-pencil/20 px-3 pb-2 pt-9">
-        <span className="relative flex h-8 w-8 items-center justify-center rounded-blob border-2 border-pencil bg-postit text-sm">
-          ☺
-          <span className="absolute -end-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-pen text-white">
-            <Sparkles strokeWidth={3} className="h-2.5 w-2.5" />
-          </span>
-        </span>
+        <span className="flex h-8 w-8 items-center justify-center rounded-blob border-2 border-pencil bg-postit text-sm">☺</span>
         <div className="leading-tight">
-          <p className="font-heading text-sm font-bold">Easy AI</p>
+          <p className="font-heading text-sm font-bold">Easy Pay</p>
           <p className="flex items-center gap-1 text-xs text-leaf">
             <span className="h-1.5 w-1.5 rounded-full bg-leaf" /> online
           </p>
@@ -428,55 +367,52 @@ function PhoneScreen({ phase }: { phase: number }) {
         {phase === 3 && (
           <div className="flex animate-inLeft">
             <div className="rounded-wobblyMd border-2 border-pencil bg-white px-3 py-1">
-              <TypingDots className="text-pen" />
+              <TypingDots className="text-pencil/60" />
             </div>
           </div>
         )}
         {phase >= 4 && (
-          <>
-            <div className="flex animate-inLeft">
-              <div className="rounded-wobblyMd border-2 border-pencil bg-white px-3 py-2">
-                <WriteOn text={l('demoBot')} step={45} />
-              </div>
+          <div
+            className={cx(
+              'animate-flipIn rounded-wobblyMd border-2 border-pencil bg-white p-3 transition-opacity duration-300',
+              phase >= 6 && 'opacity-50',
+            )}
+          >
+            <p className="mb-1 text-pencil/60">{l('demoBot')}</p>
+            <ul className="stagger space-y-1">
+              <li className="flex gap-1">
+                <b className="font-heading text-pen">2×</b> {l('demoItem1')}
+                <span className="flex-1 translate-y-[-3px] border-b-2 border-dotted border-pencil/25" />
+                {fmt(3000)}
+              </li>
+              <li className="flex gap-1">
+                {l('demoItem2')}
+                <span className="flex-1 translate-y-[-3px] border-b-2 border-dotted border-pencil/25" />
+                {fmt(600)}
+              </li>
+            </ul>
+            <div className="mt-2 flex items-baseline justify-between border-t-2 border-dashed border-pencil pt-1.5">
+              <span className="font-heading font-bold">Total</span>
+              <span className="font-heading text-2xl font-bold text-marker">{fmt(3600)}</span>
             </div>
-            <div
-              className={cx(
-                'animate-flipIn rounded-wobblyMd border-2 border-pencil bg-white p-3 transition-opacity duration-300',
-                phase >= 6 && 'opacity-50',
-              )}
-            >
-              <ul className="stagger space-y-1">
-                <li className="flex gap-1">
-                  <b className="font-heading text-pen">2×</b> {l('demoItem1')}
-                  <span className="flex-1 translate-y-[-3px] border-b-2 border-dotted border-pencil/25" />
-                  {fmt(3000)}
-                </li>
-                <li className="flex gap-1">
-                  {l('demoItem2')}
-                  <span className="flex-1 translate-y-[-3px] border-b-2 border-dotted border-pencil/25" />
-                  {fmt(600)}
-                </li>
-              </ul>
-              <div className="mt-2 flex items-baseline justify-between border-t-2 border-dashed border-pencil pt-1.5">
-                <span className="font-heading font-bold">Total</span>
-                <span className="font-heading text-2xl font-bold text-marker">{fmt(3600)}</span>
+            {phase < 6 && (
+              <div
+                className={cx(
+                  'mt-2 flex items-center justify-center gap-1.5 rounded-wobbly border-2 border-pencil bg-marker py-1.5 font-bold text-white transition-all duration-150',
+                  phase === 5 ? 'translate-x-[3px] translate-y-[3px] shadow-none' : 'shadow-hardSm',
+                )}
+              >
+                <Check strokeWidth={3} className="h-4 w-4" /> {l('demoCreate')}
               </div>
-              {phase < 6 && (
-                <div
-                  className={cx(
-                    'mt-2 flex items-center justify-center gap-1.5 rounded-wobbly border-2 border-pencil bg-marker py-1.5 font-bold text-white transition-all duration-150',
-                    phase === 5 ? 'translate-x-[3px] translate-y-[3px] shadow-none' : 'shadow-hardSm',
-                  )}
-                >
-                  <Check strokeWidth={3} className="h-4 w-4" /> {l('demoCreate')}
-                </div>
-              )}
-            </div>
-          </>
+            )}
+          </div>
         )}
         {phase >= 6 && (
-          <div className="relative animate-rise rounded-wobblyMd border-2 border-pencil bg-postit p-3 text-center">
+          <div className="relative animate-rise rounded-wobblyMd border-2 border-pencil bg-postit p-3">
             <p className="font-heading font-bold">🎉 {l('demoReady')}</p>
+            <p className="truncate text-sm text-pen underline">
+              {host()}/{DEMO_LINK}
+            </p>
             {phase === 7 && (
               <span className="absolute inset-0 flex items-center justify-center">
                 <span className="animate-stamp rounded-wobbly border-[4px] border-leaf bg-white/85 px-4 font-heading text-3xl font-bold uppercase tracking-wider text-leaf">
@@ -517,184 +453,119 @@ function useTypedChars(length: number, active: boolean) {
   const [n, setN] = useState(0)
   useEffect(() => {
     if (!active) return setN(0)
-    const per = (DEMO_STEPS[1] - 250) / length
+    const per = (DEMO_STEPS[1] - 150) / length
     const id = window.setInterval(() => setN((c) => Math.min(length, c + 1)), per)
     return () => clearInterval(id)
   }, [active, length])
   return n
 }
 
-/* ---------- how it works ---------- */
+/* ---------- how it works: message → link ---------- */
 
-function SectionHead({ id, kicker, title, ai }: { id?: string; kicker: string; title: string; ai?: boolean }) {
+function SectionHead({ kicker, title }: { kicker: string; title: string }) {
   return (
     <Reveal className="mb-12 max-w-2xl md:mb-16">
-      <Kicker ai={ai}>{kicker}</Kicker>
-      <h2 id={id} className="font-heading text-4xl font-bold leading-tight tracking-tight md:text-5xl">
-        {title}
-      </h2>
+      <Kicker>{kicker}</Kicker>
+      <h2 className="font-heading text-4xl font-bold leading-tight tracking-tight md:text-6xl">{title}</h2>
     </Reveal>
   )
 }
 
 function HowItWorks() {
   const { l } = useLanding()
-  const [lineRef, lineIn] = useInView<SVGSVGElement>()
-  const steps = [
-    { icon: Sparkles, title: l('step1T'), desc: l('step1D'), tone: 'bg-pen text-white' },
-    { icon: ReceiptText, title: l('step2T'), desc: l('step2D'), tone: 'bg-postit' },
-    { icon: Send, title: l('step3T'), desc: l('step3D'), tone: 'bg-marker text-white' },
-  ]
+  const { fmt } = useApp()
+  const examples = l('examples')
+    .split('|')
+    .map((e) => {
+      const [text, amount] = e.split('=')
+      return { text, cents: Math.round(Number(amount) * 100) }
+    })
+  const [ref, inView] = useInView<HTMLDivElement>()
+  const [i, setI] = useState(0)
+  useEffect(() => {
+    if (!inView || reduced()) return
+    const id = window.setInterval(() => setI((n) => (n + 1) % examples.length), 3200)
+    return () => clearInterval(id)
+  }, [inView, examples.length])
+  const ex = examples[i % examples.length]
+  const steps = [l('step1'), l('step2'), l('step3')]
+
   return (
-    <section id="how" className="mx-auto max-w-6xl scroll-mt-20 px-5 py-20 md:py-28">
-      <SectionHead kicker={l('howKicker')} title={l('howTitle')} />
-      <div className="relative">
-        <svg
-          ref={lineRef}
-          aria-hidden
-          viewBox="0 0 1000 40"
-          preserveAspectRatio="none"
-          className={cx('absolute inset-x-[8%] top-7 hidden h-10 w-[84%] md:block', lineIn && 'is-in')}
-        >
-          <path
-            d="M0 20 C 120 0, 220 40, 340 20 S 560 0, 660 20 S 880 40, 1000 20"
+    <section id="how" className="scroll-mt-20 border-y-2 border-dashed border-pencil/25 bg-white/50">
+      <div ref={ref} className="mx-auto max-w-6xl px-5 py-20 md:py-28">
+        <SectionHead kicker={l('howKicker')} title={l('howTitle')} />
+
+        {/* Re-keyed per example so the whole message → link sequence replays. */}
+        <div key={i} className="grid min-h-[260px] items-center gap-4 md:grid-cols-[1fr_auto_1fr] md:gap-8">
+          <div className="flex md:justify-end">
+            <div className="tail-right relative max-w-md animate-inLeft rounded-wobblySm border-[3px] border-pencil bg-pen px-5 py-4 text-2xl text-white shadow-hard md:text-3xl">
+              <WriteOn text={`“${ex.text}”`} step={60} />
+            </div>
+          </div>
+
+          <svg
+            aria-hidden
+            viewBox="0 0 120 60"
+            className="mx-auto h-16 w-24 rotate-90 text-marker md:h-20 md:w-32 md:rotate-0 rtl:-scale-x-100"
             fill="none"
-            stroke="#2d2d2d"
-            strokeOpacity=".35"
-            strokeWidth="3"
+            stroke="currentColor"
+            strokeWidth="5"
             strokeLinecap="round"
-            className="draw-path"
-            style={{ '--len': 1100 } as CSSProperties}
-          />
-        </svg>
-        <ol className="relative grid gap-12 md:grid-cols-3 md:gap-10">
-          {steps.map(({ icon: Icon, title, desc, tone }, i) => (
-            <Reveal as="li" key={i} delay={i * 140} className="group">
-              <div className="flex items-center gap-3">
-                <span
-                  className={cx(
-                    'flex h-14 w-14 items-center justify-center rounded-blob border-[3px] border-pencil shadow-hardSm transition-transform duration-300 group-hover:-translate-y-1 group-hover:rotate-12',
-                    tone,
-                  )}
-                >
-                  <Icon strokeWidth={2.5} className="h-6 w-6" />
+          >
+            <path
+              d="M6 34 C 36 12, 70 50, 104 28"
+              className="animate-draw [animation-delay:.55s]"
+              style={{ strokeDasharray: 120, '--len': 120 } as CSSProperties}
+            />
+            <path
+              d="M88 16 L 106 27 L 92 44"
+              className="animate-draw [animation-delay:.95s]"
+              style={{ strokeDasharray: 50, '--len': 50 } as CSSProperties}
+            />
+          </svg>
+
+          <div className="flex">
+            <div className="w-full max-w-sm animate-popIn rounded-wobblyMd border-[3px] border-pencil bg-white p-5 shadow-hardLg [animation-delay:1.1s]">
+              <p className="flex items-center gap-2 text-lg text-pencil/60">
+                <Link2 strokeWidth={2.5} className="h-5 w-5 text-marker" /> {l('demoLink')}
+              </p>
+              <p className="mt-1 truncate font-heading text-xl font-bold text-pen underline decoration-2 underline-offset-4">
+                {host()}/{DEMO_LINK}
+              </p>
+              <div className="mt-4 flex items-center justify-between gap-3 border-t-2 border-dashed border-pencil/40 pt-3">
+                <span className="font-heading text-4xl font-bold text-marker">{fmt(ex.cents)}</span>
+                <span className="flex items-center gap-2 rounded-wobbly border-2 border-pencil bg-[#25D366] px-3 py-1.5 font-bold text-white shadow-hardSm">
+                  <WhatsAppLogo className="h-5 w-5 fill-white" /> WhatsApp
                 </span>
-                <span className="font-heading text-5xl font-bold text-pencil/15">0{i + 1}</span>
               </div>
-              <h3 className="mt-5 font-heading text-2xl font-bold md:text-3xl">{title}</h3>
-              <p className="mt-2 text-xl leading-snug text-pencil/65">{desc}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-6 flex justify-center gap-2" aria-hidden>
+          {examples.map((_, n) => (
+            <span
+              key={n}
+              className={cx('h-2.5 rounded-full border-2 border-pencil transition-all duration-300', n === i ? 'w-8 bg-marker' : 'w-2.5 bg-white')}
+            />
+          ))}
+        </div>
+
+        <ol className="mx-auto mt-14 grid max-w-4xl gap-6 sm:grid-cols-3">
+          {steps.map((s, n) => (
+            <Reveal as="li" key={s} delay={n * 120} className="flex items-center gap-3 text-xl">
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-blob border-2 border-pencil bg-postit font-heading text-xl font-bold">
+                {n + 1}
+              </span>
+              {s}
             </Reveal>
           ))}
         </ol>
+        <p className="mt-8 flex items-center justify-center gap-2 text-center text-lg text-pencil/60">
+          <Mic strokeWidth={2.5} className="h-5 w-5 shrink-0 text-marker" /> {l('howNote')}
+        </p>
       </div>
     </section>
-  )
-}
-
-/* ---------- AI section ---------- */
-
-// 0 wait · 1 user · 2 typing · 3 question · 4 choices · 5 tapped · 6 receipt
-const AI_STEPS = [500, 700, 1100, 700, 1300, 700, 3200]
-
-function AiSection() {
-  const { l } = useLanding()
-  const items = [
-    { icon: Mic, t: l('ai1T'), d: l('ai1D') },
-    { icon: MessageCircleQuestion, t: l('ai2T'), d: l('ai2D') },
-    { icon: Tags, t: l('ai3T'), d: l('ai3D') },
-  ]
-  return (
-    <section id="ai" className="scroll-mt-20 border-y-2 border-dashed border-pencil/25 bg-white/50">
-      <div className="mx-auto grid max-w-6xl items-center gap-14 px-5 py-20 md:grid-cols-2 md:py-28">
-        <div>
-          <SectionHead kicker={l('aiKicker')} title={l('aiTitle')} ai />
-          <ul className="-mt-4 space-y-7">
-            {items.map(({ icon: Icon, t, d }, i) => (
-              <Reveal as="li" key={t} delay={i * 120} className="flex gap-4">
-                <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-blob border-2 border-pen bg-pen/10 text-pen">
-                  <Icon strokeWidth={2.5} className="h-6 w-6" />
-                </span>
-                <span>
-                  <span className="block font-heading text-2xl font-bold">{t}</span>
-                  <span className="block text-xl leading-snug text-pencil/65">{d}</span>
-                </span>
-              </Reveal>
-            ))}
-          </ul>
-        </div>
-        <Reveal delay={150}>
-          <AiChatDemo />
-        </Reveal>
-      </div>
-    </section>
-  )
-}
-
-function AiChatDemo() {
-  const { l } = useLanding()
-  const { fmt } = useApp()
-  const [ref, inView] = useInView<HTMLDivElement>()
-  const step = useLoop(AI_STEPS, inView)
-  const tilt = useTilt<HTMLDivElement>(8)
-
-  return (
-    <div ref={tilt} className="[perspective:1000px]">
-      <div
-        ref={ref}
-        className="relative mx-auto min-h-[380px] max-w-md space-y-4 rounded-wobblyMd border-[3px] border-pencil bg-paper p-5 shadow-hardLg transition-transform duration-300 ease-out paper-bg"
-        style={{ transform: 'rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg))' }}
-      >
-        <div className="flex items-center gap-2 border-b-2 border-dashed border-pencil/20 pb-3">
-          <span className="flex h-9 w-9 items-center justify-center rounded-blob border-2 border-pencil bg-pen text-white">
-            <Sparkles strokeWidth={2.5} className="h-5 w-5" />
-          </span>
-          <span className="font-heading text-lg font-bold">Easy AI</span>
-        </div>
-        {step >= 1 && (
-          <div className="flex animate-inRight justify-end">
-            <p className="max-w-[80%] rounded-wobblySm border-2 border-pencil bg-pen px-4 py-2 text-xl text-white">{l('aiChatUser')}</p>
-          </div>
-        )}
-        {step === 2 && (
-          <div className="flex animate-inLeft">
-            <span className="rounded-wobblyMd border-2 border-pencil bg-white px-4 py-1.5">
-              <TypingDots className="text-pen" />
-            </span>
-          </div>
-        )}
-        {step >= 3 && (
-          <div className="flex animate-inLeft">
-            <p className="max-w-[85%] rounded-wobblyMd border-2 border-pencil bg-white px-4 py-2 text-xl">
-              <WriteOn text={l('aiChatBot')} step={40} />
-            </p>
-          </div>
-        )}
-        {step >= 4 && (
-          <div className="flex justify-end gap-3">
-            {[l('aiChoice1'), l('aiChoice2')].map((c, i) => (
-              <span
-                key={c}
-                style={{ animationDelay: `${i * 120}ms` }}
-                className={cx(
-                  'animate-popIn rounded-wobblySm border-2 border-pencil px-4 py-2 text-xl transition-all duration-200',
-                  step >= 5 && i === 0 ? 'translate-x-[2px] translate-y-[2px] bg-pen text-white' : 'bg-postit shadow-hardSm',
-                  step >= 5 && i === 1 && 'opacity-40',
-                )}
-              >
-                {c}
-              </span>
-            ))}
-          </div>
-        )}
-        {step >= 6 && (
-          <div className="flex animate-flipIn items-center justify-between rounded-wobblyMd border-2 border-pencil bg-white px-4 py-3">
-            <span className="text-lg">🍕 + 🥤</span>
-            <span className="font-heading text-2xl font-bold text-marker">{fmt(8000)}</span>
-            <Check strokeWidth={3} className="h-6 w-6 text-leaf" />
-          </div>
-        )}
-      </div>
-    </div>
   )
 }
 
@@ -704,7 +575,7 @@ function Pricing() {
   const { settings, fmt } = useApp()
   const { l } = useLanding()
   const [ref, inView] = useInView<HTMLDivElement>()
-  const pct = useCountUp(FEE_RATE * 10000, 1400, inView) / 10000
+  const pct = useCountUp(FEE_RATE * 10000, 1200, inView) / 10000
   const shownFee = new Intl.NumberFormat(localeOf(settings.lang), { style: 'percent', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(
     pct,
   )
@@ -739,7 +610,7 @@ function Pricing() {
                   strokeWidth="4"
                   strokeLinecap="round"
                   className="draw-path"
-                  style={{ '--len': 1000, '--delay': '500ms' } as CSSProperties}
+                  style={{ '--len': 1000, '--delay': '400ms' } as CSSProperties}
                 />
               </svg>
             </span>
@@ -823,19 +694,47 @@ function Faq() {
   )
 }
 
-/* ---------- final CTA ---------- */
+/* ---------- final CTA with the live demo link ---------- */
 
 function FinalCta({ onStart }: { onStart: () => void }) {
   const { l } = useLanding()
+  const [copied, setCopied] = useState(false)
+  const url = `${window.location.origin}/`
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    } catch {
+      /* clipboard blocked: the link is visible anyway */
+    }
+  }
   return (
     <section className="relative px-5 pb-24 pt-10 text-center">
       <Reveal>
-        <div className="relative mx-auto max-w-3xl">
+        <div className="relative isolate mx-auto max-w-3xl">
           <span
             aria-hidden
-            className="absolute left-1/2 top-1/2 -z-10 h-72 w-72 -translate-x-1/2 -translate-y-1/2 rounded-blob bg-postit md:h-96 md:w-[34rem]"
+            className="absolute left-1/2 top-1/2 -z-10 h-80 w-80 -translate-x-1/2 -translate-y-1/2 rounded-blob bg-postit md:h-96 md:w-[36rem]"
           />
           <h2 className="font-heading text-4xl font-bold leading-tight tracking-tight md:text-6xl">{l('finalTitle')}</h2>
+          <p className="mt-6 text-xl text-pencil/70">{l('finalSub')}</p>
+          <div className="mx-auto mt-3 flex max-w-md items-center gap-2 rounded-wobbly border-[3px] border-pencil bg-white py-1.5 pe-1.5 ps-5 shadow-hard">
+            <a
+              href={url}
+              onClick={(e) => (e.preventDefault(), onStart())}
+              className="min-w-0 flex-1 truncate text-start font-heading text-xl font-bold text-pen underline decoration-2 underline-offset-4"
+            >
+              {host()}
+            </a>
+            <button
+              onClick={copy}
+              aria-label="Copy"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-blob border-2 border-pencil bg-postit transition-transform duration-150 hover:-rotate-12 active:scale-90"
+            >
+              {copied ? <Check strokeWidth={3} className="h-5 w-5 text-leaf" /> : <Copy strokeWidth={2.5} className="h-5 w-5" />}
+            </button>
+          </div>
           <div className="mt-8 flex justify-center">
             <Button variant="accent" size="lg" onClick={onStart} className="group">
               {l('ctaFinal')}

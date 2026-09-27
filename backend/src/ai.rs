@@ -147,14 +147,8 @@ impl Ai {
         if !self.enabled() {
             return local_parse(history, currency, lang);
         }
-        let mut messages = vec![json!({ "role": "system", "content": system_prompt(lang, currency, catalog) })];
-        // Keep the conversation short: last 12 turns is plenty for corrections.
-        let start = history.len().saturating_sub(12);
-        for m in &history[start..] {
-            let role = if m.role == "assistant" { "assistant" } else { "user" };
-            messages.push(json!({ "role": role, "content": m.content }));
-        }
-        match self.complete(&self.model, Value::Array(messages), true).await {
+        let messages = self.chat_messages(history, lang, currency, catalog);
+        match self.complete(&self.model, messages, true).await {
             Ok(text) => parse_model_output(&text, currency).unwrap_or_else(|| {
                 tracing::warn!("could not parse model output: {text}");
                 local_parse(history, currency, lang)
@@ -164,6 +158,97 @@ impl Ai {
                 local_parse(history, currency, lang)
             }
         }
+    }
+
+    /// Like [`Ai::chat`], but streams the model's answer: `on_reply` receives each new
+    /// piece of the `reply` text as the tokens arrive, before the full JSON is complete.
+    pub async fn chat_stream(
+        &self,
+        history: &[ChatMessage],
+        lang: &str,
+        currency: &str,
+        catalog: &[CatalogEntry],
+        on_reply: impl Fn(&str),
+    ) -> ChatResponse {
+        if !self.enabled() {
+            return local_parse(history, currency, lang);
+        }
+        let messages = self.chat_messages(history, lang, currency, catalog);
+        match self.complete_stream(&self.model, messages, &on_reply).await {
+            Ok(text) => parse_model_output(&text, currency).unwrap_or_else(|| {
+                tracing::warn!("could not parse model output: {text}");
+                local_parse(history, currency, lang)
+            }),
+            Err(e) => {
+                tracing::error!("openrouter stream error: {e:#}");
+                local_parse(history, currency, lang)
+            }
+        }
+    }
+
+    fn chat_messages(&self, history: &[ChatMessage], lang: &str, currency: &str, catalog: &[CatalogEntry]) -> Value {
+        let mut messages = vec![json!({ "role": "system", "content": system_prompt(lang, currency, catalog) })];
+        // Keep the conversation short: last 12 turns is plenty for corrections.
+        let start = history.len().saturating_sub(12);
+        for m in &history[start..] {
+            let role = if m.role == "assistant" { "assistant" } else { "user" };
+            messages.push(json!({ "role": role, "content": m.content }));
+        }
+        Value::Array(messages)
+    }
+
+    /// Reads OpenRouter's server-sent events and returns the whole content at the end.
+    async fn complete_stream(&self, model: &str, messages: Value, on_reply: &impl Fn(&str)) -> Result<String> {
+        let key = self.key.as_ref().ok_or_else(|| anyhow!("no api key"))?;
+        let body = json!({
+            "model": model,
+            "messages": messages,
+            "temperature": 0.3,
+            "stream": true,
+            "response_format": { "type": "json_object" },
+        });
+        let mut res = self
+            .http
+            .post(URL)
+            .bearer_auth(key)
+            .header("X-Title", "Easy Pay")
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let mut buf: Vec<u8> = Vec::new();
+        let mut content = String::new();
+        let mut sent = 0; // bytes of the reply already handed to `on_reply`
+        while let Some(chunk) = res.chunk().await? {
+            buf.extend_from_slice(&chunk);
+            while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = buf.drain(..=nl).collect();
+                let line = String::from_utf8_lossy(&line);
+                // SSE: "data: {...}"; lines starting with ':' are keep-alive comments.
+                let Some(data) = line.trim().strip_prefix("data:") else { continue };
+                let data = data.trim();
+                if data == "[DONE]" {
+                    continue;
+                }
+                let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
+                if let Some(err) = v.get("error") {
+                    return Err(anyhow!("stream error: {err}"));
+                }
+                if let Some(piece) = v["choices"][0]["delta"]["content"].as_str() {
+                    content.push_str(piece);
+                    let reply = partial_reply(&content);
+                    if reply.len() > sent {
+                        on_reply(&reply[sent..]);
+                        sent = reply.len();
+                    }
+                }
+            }
+        }
+        if content.is_empty() {
+            return Err(anyhow!("empty stream"));
+        }
+        Ok(content)
     }
 
     /// `wav_base64` is a mono 16-bit WAV encoded by the browser.
@@ -203,6 +288,57 @@ impl Ai {
             .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).take(4).collect())
             .unwrap_or_default())
     }
+}
+
+/// Decodes as much of the `"reply"` string as has arrived in a still-incomplete JSON object.
+fn partial_reply(json: &str) -> String {
+    let Some(key) = json.find("\"reply\"") else { return String::new() };
+    let rest = json[key + 7..].trim_start();
+    let Some(rest) = rest.strip_prefix(':') else { return String::new() };
+    let Some(rest) = rest.trim_start().strip_prefix('"') else { return String::new() };
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => {
+                let Some(e) = chars.next() else { break };
+                match e {
+                    'n' => out.push('\n'),
+                    't' => out.push('\t'),
+                    'r' => {}
+                    'u' => {
+                        let Some(hi) = hex4(&mut chars) else { break }; // escape not complete yet
+                        let code = if (0xD800..0xDC00).contains(&hi) {
+                            // Surrogate pair (emoji): needs the following \uXXXX too.
+                            if chars.next() != Some('\\') || chars.next() != Some('u') {
+                                break;
+                            }
+                            let Some(lo) = hex4(&mut chars) else { break };
+                            0x10000 + ((hi - 0xD800) << 10) + (lo.wrapping_sub(0xDC00) & 0x3FF)
+                        } else {
+                            hi
+                        };
+                        match char::from_u32(code) {
+                            Some(ch) => out.push(ch),
+                            None => break,
+                        }
+                    }
+                    other => out.push(other),
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn hex4(chars: &mut std::str::Chars) -> Option<u32> {
+    let hex: String = chars.by_ref().take(4).collect();
+    if hex.len() < 4 {
+        return None;
+    }
+    u32::from_str_radix(&hex, 16).ok()
 }
 
 fn to_cents(v: &Value) -> Option<i64> {
@@ -411,5 +547,23 @@ mod tests {
     fn choices_only_without_draft() {
         let r = parse_model_output(r#"{"reply":"Price of each?","choices":["Together","Each price"],"draft":null}"#, "USD").unwrap();
         assert_eq!(r.choices.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::partial_reply;
+
+    #[test]
+    fn reads_reply_while_json_is_incomplete() {
+        assert_eq!(partial_reply(""), "");
+        assert_eq!(partial_reply("{\"reply\": \"Here"), "Here");
+        assert_eq!(partial_reply("{\"reply\":\"Oi, \\\"tudo\\\" bem"), "Oi, \"tudo\" bem");
+        assert_eq!(partial_reply("{\"reply\": \"Done.\", \"choices\": [\"x\"]"), "Done.");
+        // Incomplete escapes wait for the rest.
+        assert_eq!(partial_reply("{\"reply\": \"a\\u00"), "a");
+        assert_eq!(partial_reply("{\"reply\": \"a\\u00e9"), "aé");
+        assert_eq!(partial_reply("{\"reply\": \"\\ud83d"), "");
+        assert_eq!(partial_reply("{\"reply\": \"\\ud83d\\ude00!"), "😀!");
     }
 }
