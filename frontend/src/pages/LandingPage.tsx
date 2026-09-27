@@ -177,24 +177,18 @@ function Nav({ onStart }: { onStart: () => void }) {
 /* ---------- hero ---------- */
 
 function Hero({ onStart }: { onStart: () => void }) {
-  const { l } = useLanding()
+  const { l, fee } = useLanding()
   return (
-    <section className="mx-auto grid max-w-6xl items-center gap-2 px-5 pb-8 pt-6 md:grid-cols-[1.1fr_1fr] md:gap-6 md:pb-20 md:pt-14">
+    <section className="mx-auto grid max-w-6xl items-center gap-4 px-5 pb-10 pt-8 md:min-h-[calc(100svh-80px)] md:grid-cols-[1.15fr_1fr] md:gap-8 md:pb-16 md:pt-4">
       <div className="relative z-10">
-        <div className="animate-rise">
-          <Kicker>
-            <Link2 strokeWidth={2.5} className="h-5 w-5 text-marker" />
-            {l('heroKicker')}
-          </Kicker>
-        </div>
-        <h1 className="font-heading text-[2.75rem] font-bold leading-[1.05] tracking-tight sm:text-6xl lg:text-7xl">
-          <span className="block animate-rise [animation-delay:.08s]">{l('heroTitle1')}</span>
-          <span className="isolate block animate-rise [animation-delay:.2s]">
+        <h1 className="font-heading text-[2.9rem] font-bold leading-[1.05] tracking-tight sm:text-6xl lg:text-7xl">
+          <span className="block animate-rise">{l('heroTitle1')}</span>
+          <span className="isolate block animate-rise [animation-delay:.12s]">
             <Marked text={l('heroTitle2')} />
           </span>
         </h1>
-        <p className="mt-6 max-w-lg animate-rise text-xl leading-relaxed text-pencil/70 [animation-delay:.35s] md:text-2xl">{l('heroSub')}</p>
-        <div className="mt-8 flex animate-rise flex-wrap items-center gap-3 [animation-delay:.5s]">
+        <p className="mt-6 max-w-md animate-rise text-xl leading-relaxed text-pencil/70 [animation-delay:.25s] md:text-2xl">{l('heroSub')}</p>
+        <div className="mt-8 flex animate-rise flex-wrap items-center gap-4 [animation-delay:.38s]">
           <Button variant="accent" size="lg" onClick={onStart} className="group">
             {l('ctaDemo')}
             <ArrowRight
@@ -202,14 +196,22 @@ function Hero({ onStart }: { onStart: () => void }) {
               className="transition-transform duration-200 group-hover:translate-x-1.5 rtl:rotate-180 rtl:group-hover:-translate-x-1.5"
             />
           </Button>
-          <button onClick={() => scrollToId('how')} className="group min-h-[48px] px-3 text-xl text-pencil/70 transition-colors hover:text-pencil">
-            {l('ctaHow')} <span className="inline-block transition-transform duration-200 group-hover:translate-y-1">↓</span>
-          </button>
+          <Button variant="ghost" size="lg" onClick={() => scrollToId('how')}>
+            {l('ctaHow')}
+          </Button>
         </div>
-        <p className="mt-5 flex animate-rise items-center gap-2 text-lg text-pencil/60 [animation-delay:.65s]">
-          <Check strokeWidth={3} className="h-5 w-5 text-leaf" />
-          {l('heroNote')}
-        </p>
+        <ul className="mt-8 flex animate-rise flex-wrap gap-x-5 gap-y-2 text-lg text-pencil/70 [animation-delay:.5s]">
+          <li className="flex items-center gap-1.5">
+            <Check strokeWidth={3} className="h-5 w-5 text-leaf" />
+            <b className="font-heading text-marker">{fee}</b> {l('perSale')}
+          </li>
+          <li className="flex items-center gap-1.5">
+            <WhatsAppLogo className="h-5 w-5 fill-[#25D366]" /> WhatsApp
+          </li>
+          <li className="flex items-center gap-1.5">
+            <Check strokeWidth={3} className="h-5 w-5 text-leaf" /> {l('perk1')}
+          </li>
+        </ul>
       </div>
       <HeroScene />
     </section>
@@ -231,33 +233,28 @@ function HeroScene() {
   // Pointer (--mx/--my) + scroll (--sp) → rotation. Scrolling tips the phone back.
   const scene: CSSProperties = {
     transform:
-      'translateY(calc(var(--sp, 0) * 120px)) ' +
-      'rotateX(calc(8deg - var(--my, 0) * 10deg + var(--sp, 0) * 30deg)) ' +
-      'rotateY(calc(-16deg + var(--mx, 0) * 22deg - var(--sp, 0) * 10deg)) ' +
-      'rotateZ(calc(1.5deg + var(--mx, 0) * -2deg))',
+      'translateY(calc(var(--sp, 0) * 100px)) ' +
+      'rotateX(calc(4deg - var(--my, 0) * 6deg + var(--sp, 0) * 22deg)) ' +
+      'rotateY(calc(-10deg + var(--mx, 0) * 14deg - var(--sp, 0) * 6deg))',
   }
   const float = (z: number, amp: number): CSSProperties => ({
     transform: `translate3d(calc(var(--mx, 0) * ${amp}px), calc(var(--my, 0) * ${amp * 0.7}px), ${z}px)`,
   })
 
   return (
-    <div ref={ref} className="relative mx-auto h-[500px] w-full max-w-[540px] [perspective:1600px] sm:h-[620px]">
-      <div className="preserve-3d absolute inset-0 scale-[.8] sm:scale-100">
+    <div ref={ref} className="relative mx-auto h-[470px] w-full max-w-[520px] [perspective:1800px] sm:h-[620px]">
+      <div className="preserve-3d absolute inset-0 scale-[.76] sm:scale-100">
         <div className="preserve-3d absolute inset-0" style={scene}>
           <div className="preserve-3d absolute inset-0 animate-phoneIn">
-            <div className="absolute left-1/2 top-1/2 h-[430px] w-[430px]" style={{ transform: 'translate(-50%, -50%) translateZ(-160px)' }}>
+            <div className="absolute left-1/2 top-1/2 h-[400px] w-[400px]" style={{ transform: 'translate(-50%, -50%) translateZ(-160px)' }}>
               <div className="h-full w-full rounded-blob bg-postit" />
             </div>
 
             <Phone3D phase={phase} />
 
-            <div className="absolute start-0 top-4 sm:-start-4" style={float(130, 16)}>
-              <FeeSticker />
-            </div>
-
             {/* The generated link flies out of the phone */}
             {phase >= 6 && (
-              <div className="absolute -end-2 top-[46%] sm:-end-12" style={float(150, 24)}>
+              <div className="absolute -end-2 top-[46%] sm:-end-12" style={float(120, 12)}>
                 <div className="animate-popIn rounded-wobblyMd border-[3px] border-pencil bg-white px-4 py-3 shadow-hardLg">
                   <p className="flex items-center gap-1.5 text-base text-pencil/60">
                     <Link2 strokeWidth={2.5} className="h-4 w-4 text-marker" /> {l('demoLink')}
@@ -276,7 +273,7 @@ function HeroScene() {
             )}
 
             {phase === 7 && (
-              <div className="absolute -start-2 bottom-16 sm:-start-8" style={float(170, 26)}>
+              <div className="absolute -start-2 bottom-16 sm:-start-8" style={float(140, 14)}>
                 <div className="relative animate-popIn rounded-wobbly border-2 border-pencil bg-leaf px-4 py-2.5 font-heading text-xl font-bold text-white shadow-hard">
                   💰 {l('demoToast', { amount: total })}
                   <Confetti fire="paid" count={20} spread={130} />
@@ -286,30 +283,6 @@ function HeroScene() {
           </div>
         </div>
       </div>
-    </div>
-  )
-}
-
-/** Circular sticker with the fee and rotating text around it. */
-function FeeSticker() {
-  const { l, fee } = useLanding()
-  const ring = `${l('perSale')} · ${fee} · ${l('perSale')} · ${fee} · `.toUpperCase()
-  return (
-    <div className="relative h-28 w-28 sm:h-32 sm:w-32">
-      <div className="absolute inset-0 rounded-full border-[3px] border-pencil bg-marker shadow-hard" />
-      <svg viewBox="0 0 120 120" className="absolute inset-0 h-full w-full animate-[spin_18s_linear_infinite] text-white" aria-hidden>
-        <defs>
-          <path id="fee-ring" d="M60,60 m-45,0 a45,45 0 1,1 90,0 a45,45 0 1,1 -90,0" />
-        </defs>
-        <text fontSize="10" fill="currentColor" fontFamily="Patrick Hand, cursive" letterSpacing="1">
-          <textPath href="#fee-ring" textLength="280" lengthAdjust="spacingAndGlyphs">
-            {ring}
-          </textPath>
-        </text>
-      </svg>
-      <span className="absolute inset-0 flex items-center justify-center font-heading text-2xl font-bold text-white [text-shadow:2px_2px_0_#2d2d2d] sm:text-[1.7rem]">
-        {fee}
-      </span>
     </div>
   )
 }
