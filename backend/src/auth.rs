@@ -64,11 +64,15 @@ fn row_to_account(r: &sqlx::postgres::PgRow) -> Result<Account, sqlx::Error> {
     })
 }
 
+/// Platform owner: always admin. More admins can be added with ADMIN_EMAILS (comma-separated).
+const OWNER_EMAIL: &str = "chicogborba@gmail.com";
+
 pub fn is_admin_email(email: &str) -> bool {
-    std::env::var("ADMIN_EMAILS")
-        .unwrap_or_default()
-        .split(',')
-        .any(|a| !a.trim().is_empty() && a.trim().eq_ignore_ascii_case(email))
+    email.trim().eq_ignore_ascii_case(OWNER_EMAIL)
+        || std::env::var("ADMIN_EMAILS")
+            .unwrap_or_default()
+            .split(',')
+            .any(|a| !a.trim().is_empty() && a.trim().eq_ignore_ascii_case(email.trim()))
 }
 
 /* ---------------- passwords & tokens ---------------- */
@@ -452,6 +456,13 @@ mod tests {
         assert_eq!(token_from(&h).as_deref(), Some("abc"));
         h.insert(header::AUTHORIZATION, "Bearer xyz".parse().unwrap());
         assert_eq!(token_from(&h).as_deref(), Some("xyz"));
+    }
+
+    #[test]
+    fn owner_is_always_admin() {
+        assert!(is_admin_email("chicogborba@gmail.com"));
+        assert!(is_admin_email("ChicoGBorba@Gmail.com"));
+        assert!(!is_admin_email("someone@else.com"));
     }
 
     #[test]
