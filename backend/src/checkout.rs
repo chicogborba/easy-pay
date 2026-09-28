@@ -71,7 +71,7 @@ pub async fn pay_link(State(s): State<AppState>, Path(id): Path<String>, Json(re
     // Simulate the processor taking a moment.
     tokio::time::sleep(Duration::from_millis(900)).await;
     let payer = resolve_payer(&s, &link, req).await?;
-    if !db::mark_paid(&s.db, &id, "mock", &method, &payer, s.payments.default_fee_bps).await? {
+    if !db::mark_paid(&s.db, &id, "mock", &method, &payer, s.payments.fees).await? {
         return Err(ApiError(StatusCode::CONFLICT, "paid".into()));
     }
     db::get_link(&s.db, &id).await?.map(|l| Json(l.public())).ok_or_else(not_found)
@@ -82,7 +82,7 @@ pub async fn checkout(State(s): State<AppState>, Path(id): Path<String>, Json(re
     let (link, seller) = payable_link(&s, &id).await?;
     let Some(seller) = seller else { return Err(ApiError(StatusCode::CONFLICT, "mock".into())) };
     let payer = resolve_payer(&s, &link, req).await?;
-    let fee = s.payments.fee_cents(link.total_cents, seller.fee_bps_override);
+    let fee = s.payments.fee_cents(link.total_cents, seller.fee_bps_override, &seller.country);
     let not_ready = || ApiError(StatusCode::CONFLICT, "seller not ready to receive payments".into());
 
     let (reference, url) = match mode_for_seller(&s, Some(&seller)) {
@@ -239,7 +239,7 @@ pub async fn stripe_webhook(State(s): State<AppState>, headers: HeaderMap, body:
             let link_id = obj["client_reference_id"].as_str().unwrap_or("");
             match payer_from_metadata(&obj["metadata"]) {
                 Some(payer) => {
-                    let paid = db::mark_paid(&s.db, link_id, "stripe", "stripe", &payer, s.payments.default_fee_bps).await?;
+                    let paid = db::mark_paid(&s.db, link_id, "stripe", "stripe", &payer, s.payments.fees).await?;
                     tracing::info!(link = link_id, paid, "stripe payment confirmed");
                 }
                 None => tracing::warn!(link = link_id, "stripe payment without valid payer metadata"),
@@ -308,7 +308,7 @@ pub async fn mp_webhook(State(s): State<AppState>, headers: HeaderMap, Query(q):
     let method = payment["payment_type_id"].as_str().unwrap_or("mercadopago").to_string();
     match payer_from_metadata(&payment["metadata"]) {
         Some(payer) => {
-            let paid = db::mark_paid(&s.db, link_id, "mercadopago", &method, &payer, s.payments.default_fee_bps).await?;
+            let paid = db::mark_paid(&s.db, link_id, "mercadopago", &method, &payer, s.payments.fees).await?;
             db::set_provider_ref(&s.db, link_id, &payment_id).await?;
             tracing::info!(link = link_id, paid, "mercado pago payment confirmed");
         }

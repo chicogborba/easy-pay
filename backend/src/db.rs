@@ -371,14 +371,14 @@ pub async fn cancel_link(pool: &PgPool, merchant: &str, id: &str) -> Result<bool
 /// Demo payment with no platform fee (used by tests and old demo links).
 #[cfg(test)]
 pub async fn pay_link(pool: &PgPool, id: &str, method: &str, payer: &Payer) -> Result<bool> {
-    mark_paid(pool, id, "mock", method, payer, 0).await
+    mark_paid(pool, id, "mock", method, payer, crate::payments::Fees { br: 0, intl: 0 }).await
 }
 
-/// Marks a waiting link paid, records the platform fee (seller's custom fee or `default_fee_bps`)
+/// Marks a waiting link paid, records the platform fee (seller's custom fee, else the fee for their country)
 /// and creates or updates the seller's customer (matched by phone).
 /// Returns false if the link was not waiting (already paid, cancelled or unknown), so
 /// duplicate webhooks are harmless.
-pub async fn mark_paid(pool: &PgPool, id: &str, provider: &str, method: &str, payer: &Payer, default_fee_bps: i64) -> Result<bool> {
+pub async fn mark_paid(pool: &PgPool, id: &str, provider: &str, method: &str, payer: &Payer, fees: crate::payments::Fees) -> Result<bool> {
     let mut tx = pool.begin().await?;
     let merchant: Option<String> =
         sqlx::query_scalar("SELECT merchant_id FROM links WHERE id = $1 AND status = 'waiting' FOR UPDATE")
@@ -409,7 +409,10 @@ pub async fn mark_paid(pool: &PgPool, id: &str, provider: &str, method: &str, pa
         "UPDATE links l SET status = 'paid', paid_at = $2, paid_method = $3,
                           customer_id = $4, payer_name = $5, payer_phone = $6, payer_email = $7, provider = $8,
                           fee_bps = f.bps, platform_fee_cents = l.total_cents * f.bps / 10000
-         FROM (SELECT COALESCE((SELECT fee_bps_override FROM accounts WHERE id = $9), $10)::BIGINT AS bps) f
+         FROM (SELECT COALESCE(
+                 (SELECT fee_bps_override FROM accounts WHERE id = $9),
+                 CASE WHEN (SELECT country FROM accounts WHERE id = $9) = 'BR' THEN $10 ELSE $11 END
+               )::BIGINT AS bps) f
          WHERE l.id = $1",
     )
     .bind(id)
@@ -421,7 +424,8 @@ pub async fn mark_paid(pool: &PgPool, id: &str, provider: &str, method: &str, pa
     .bind(&payer.email)
     .bind(provider)
     .bind(&merchant)
-    .bind(default_fee_bps)
+    .bind(fees.br)
+    .bind(fees.intl)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -1043,5 +1047,29 @@ mod tests {
         other.customer_id = Some(cid);
         let x = create_link(&db, "another-merchant", "", &other).await.unwrap();
         assert_eq!(x.customer_id, None);
+    }
+
+    #[tokio::test]
+    async fn platform_fee_depends_on_country_and_override() {
+        let Some(db) = pool().await else { return };
+        let fees = crate::payments::Fees { br: 150, intl: 100 };
+        let mut earned = vec![];
+        for (country, custom) in [("BR", None), ("US", None), ("BR", Some(50i64))] {
+            let m = merchant();
+            sqlx::query("INSERT INTO accounts (id, email, password_hash, country, fee_bps_override, created_at) VALUES ($1, $2, 'x', $3, $4, 0)")
+                .bind(&m)
+                .bind(format!("{m}@fees.test"))
+                .bind(country)
+                .bind(custom)
+                .execute(&db)
+                .await
+                .unwrap();
+            let mut d = draft(vec![item("Bolo", None)]); // 20.00
+            d.items[0].total_cents = 10_000; // 100.00
+            let l = create_link(&db, &m, "", &d).await.unwrap();
+            assert!(mark_paid(&db, &l.id, "mock", "pix", &payer("Ana", "11912345678"), fees).await.unwrap());
+            earned.push(get_link(&db, &l.id).await.unwrap().unwrap().platform_fee_cents);
+        }
+        assert_eq!(earned, vec![150, 100, 50]);
     }
 }

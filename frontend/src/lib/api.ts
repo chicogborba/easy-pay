@@ -71,7 +71,9 @@ export type ProductDetail = Omit<ProductSummary, 'id'> & {
   weekdays: number[]
 }
 export type PaymentMode = 'mock' | 'stripe' | 'mercadopago'
-export type ServerConfig = { ai: boolean; voice: boolean; providers?: { stripe: boolean; mercadopago: boolean }; fee_bps?: number }
+export type ServerConfig = { ai: boolean; voice: boolean; providers?: { stripe: boolean; mercadopago: boolean }; fees?: Fees }
+/** Platform fee per paid sale in basis points (150 = 1.5%): Brazil and everyone else. */
+export type Fees = { br: number; intl: number }
 export type Account = {
   id: string
   email: string
@@ -127,7 +129,7 @@ export type AdminOverview = {
   accounts_payouts_connected: number
   accounts_verified: number
   by_country: { country: string; accounts: number; connected: number }[]
-  default_fee_bps: number
+  fees: Fees
   providers: { stripe: boolean; mercadopago: boolean }
   usage_30d: KindCount[]
   signups_by_day: DayCount[]
@@ -162,7 +164,7 @@ export type AdminAccountDetail = {
   gmv_30d: CurrencyTotal[]
   revenue_all: CurrencyTotal[]
   revenue_30d: CurrencyTotal[]
-  default_fee_bps: number
+  fees: Fees
   usage_30d: KindCount[]
   usage_by_day: DayCount[]
   links_by_day: DayCount[]

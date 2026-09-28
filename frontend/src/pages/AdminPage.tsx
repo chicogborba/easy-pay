@@ -130,7 +130,7 @@ function Overview() {
       <Card tone="postit" decoration="tape" className="!p-6">
         <h3 className="mb-1 font-heading text-3xl font-bold">🤑 You earned</h3>
         <p className="mb-4 text-lg text-pencil/60">
-          Platform fee: {(o.default_fee_bps / 100).toLocaleString('en')}% by default (custom per seller in Accounts) · payments:{' '}
+          Platform fee: {o.fees.br / 100}% Brazil · {o.fees.intl / 100}% other countries (custom per seller in Accounts) · payments:{' '}
           Stripe {o.providers.stripe ? 'on' : 'demo'}, Mercado Pago {o.providers.mercadopago ? 'on' : 'demo'}
         </p>
         <div className="grid gap-6 md:grid-cols-2">
@@ -468,7 +468,7 @@ function AccountDetail() {
             ))}
           </dl>
         </Card>
-        <FeeCard id={a.id} current={a.fee_bps_override} defaultBps={d.default_fee_bps} onSaved={load} />
+        <FeeCard id={a.id} current={a.fee_bps_override} defaultBps={a.country === 'BR' ? d.fees.br : d.fees.intl} onSaved={load} />
       </div>
 
       <div className="grid gap-6 md:grid-cols-3">

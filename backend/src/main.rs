@@ -102,7 +102,8 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         stripe = state.payments.stripe.is_some(),
         mercadopago = state.payments.mp.is_some(),
-        fee_bps = state.payments.default_fee_bps,
+        fee_br_bps = state.payments.fees.br,
+        fee_intl_bps = state.payments.fees.intl,
         "payments"
     );
     if !state.ai.enabled() {
@@ -198,7 +199,8 @@ async fn config(State(s): State<AppState>) -> Json<serde_json::Value> {
         "voice": s.ai.enabled(),
         // Which providers are live; a seller whose country's provider is off runs in demo mode.
         "providers": { "stripe": s.payments.stripe.is_some(), "mercadopago": s.payments.mp.is_some() },
-        "fee_bps": s.payments.default_fee_bps,
+        // Platform fee per paid sale (basis points): Brazil and everyone else.
+        "fees": s.payments.fees,
     }))
 }
 
@@ -497,7 +499,7 @@ mod api_tests {
         let state = AppState {
             db: db::connect(&url).await.unwrap(),
             ai: ai::Ai::from_env(),
-            payments: Payments { stripe: None, mp: None, default_fee_bps: 0, app_url: "http://test".into() },
+            payments: Payments { stripe: None, mp: None, fees: payments::Fees { br: 0, intl: 0 }, app_url: "http://test".into() },
             mailer: email::Mailer::from_env(),
             login_limiter: Arc::new(RateLimiter::new(100, Duration::from_secs(60))),
             signup_limiter: Arc::new(RateLimiter::new(100, Duration::from_secs(60))),

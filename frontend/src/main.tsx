@@ -16,6 +16,7 @@ import CustomerDetailPage from './pages/CustomerDetailPage'
 import PayPage from './pages/PayPage'
 import AuthPage, { ForgotPage, ResetPage, VerifyPage } from './pages/AuthPage'
 import LegalPage from './pages/LegalPage'
+import PricingPage from './pages/PricingPage'
 import AdminPage from './pages/AdminPage'
 import { Spinner } from './components/ui'
 import LandingPage from './pages/LandingPage'
@@ -69,6 +70,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/forgot" element={<ForgotPage />} />
           <Route path="/reset" element={<ResetPage />} />
           <Route path="/verify" element={<VerifyPage />} />
+          <Route path="/pricing" element={<PricingPage />} />
           <Route path="/terms" element={<LegalPage doc="terms" />} />
           <Route path="/privacy" element={<LegalPage doc="privacy" />} />
           {/* Merchant app */}

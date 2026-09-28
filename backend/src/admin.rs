@@ -150,7 +150,7 @@ pub async fn overview(State(s): State<AppState>, _: Admin) -> ApiResult<Value> {
             "SELECT (created_at / 86400000) * 86400000 AS day, COUNT(*) AS count FROM links
              WHERE created_at >= $1 AND ($2::TEXT IS NULL OR merchant_id = $2) GROUP BY 1 ORDER BY 1", d30, None).await?,
         "providers": { "stripe": s.payments.stripe.is_some(), "mercadopago": s.payments.mp.is_some() },
-        "default_fee_bps": s.payments.default_fee_bps,
+        "fees": s.payments.fees,
         "ai_enabled": s.ai.enabled(),
     })))
 }
@@ -264,7 +264,7 @@ pub async fn account_detail(State(s): State<AppState>, _: Admin, Path(id): Path<
         "gmv_30d": gmv(db, d30, Some(&id)).await?,
         "revenue_all": revenue(db, 0, Some(&id)).await?,
         "revenue_30d": revenue(db, d30, Some(&id)).await?,
-        "default_fee_bps": s.payments.default_fee_bps,
+        "fees": s.payments.fees,
         "usage_30d": usage_by_kind(db, d30, Some(&id)).await?,
         "usage_by_day": per_day(db,
             "SELECT (created_at / 86400000) * 86400000 AS day, COUNT(*) AS count FROM usage_events

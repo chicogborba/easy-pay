@@ -16,7 +16,8 @@ export function PayoutsCard({ onLater }: { onLater?: () => void }) {
   const provider = me.payout_provider || providerFor(me.country)
   const live = !!server.providers?.[provider]
   const name = providerLabel(provider)
-  const fee = ((me.fee_bps_override ?? server.fee_bps ?? 0) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 }) + '%'
+  const countryFee = me.country === 'BR' ? server.fees?.br : server.fees?.intl
+  const fee = ((me.fee_bps_override ?? countryFee ?? 0) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 }) + '%'
 
   const connect = async () => {
     setBusy(true)
@@ -73,7 +74,7 @@ export function PayoutsCard({ onLater }: { onLater?: () => void }) {
           )}
         </>
       )}
-      {(server.fee_bps ?? 0) > 0 || me.fee_bps_override ? <p className="text-base text-pencil/60">{t('feeInfo', { fee })}</p> : null}
+      {(countryFee ?? 0) > 0 || me.fee_bps_override ? <p className="text-base text-pencil/60">{t('feeInfo', { fee })}</p> : null}
     </Card>
   )
 }

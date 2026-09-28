@@ -30,21 +30,36 @@ pub fn provider_for_country(country: &str) -> Provider {
     }
 }
 
+/// Platform fee per paid sale, in basis points. Brazil (Mercado Pago) and everyone else (Stripe)
+/// are priced separately because the providers' own fees differ. Shown on the public /pricing page.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct Fees {
+    pub br: i64,
+    pub intl: i64,
+}
+
+impl Fees {
+    pub fn for_country(&self, country: &str) -> i64 {
+        if country.eq_ignore_ascii_case("BR") { self.br } else { self.intl }
+    }
+}
+
 /// Configured payment providers. A provider without credentials means its sellers run
 /// in demo mode (simulated payments), so the app is always usable.
 #[derive(Clone)]
 pub struct Payments {
     pub stripe: Option<Stripe>,
     pub mp: Option<crate::mercadopago::MercadoPago>,
-    /// Platform fee in basis points (300 = 3%) unless the seller has a custom fee.
-    pub default_fee_bps: i64,
+    /// Platform fee in basis points (150 = 1.5%) unless the seller has a custom fee.
+    pub fees: Fees,
     pub app_url: String,
 }
 
 impl Payments {
     pub fn from_env() -> Self {
         let app_url = std::env::var("APP_URL").unwrap_or_else(|_| "http://localhost:5173".into()).trim_end_matches('/').to_string();
-        let default_fee_bps = std::env::var("PLATFORM_FEE_BPS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let bps = |var: &str, default: i64| std::env::var(var).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default);
+        let fees = Fees { br: bps("PLATFORM_FEE_BPS_BR", 150), intl: bps("PLATFORM_FEE_BPS", 100) };
         let stripe = std::env::var("STRIPE_SECRET_KEY").ok().filter(|k| !k.trim().is_empty()).map(|key| {
             let webhook_secret = std::env::var("STRIPE_WEBHOOK_SECRET").unwrap_or_default();
             if webhook_secret.is_empty() {
@@ -59,7 +74,7 @@ impl Payments {
             }
         });
         let mp = crate::mercadopago::MercadoPago::from_env(&app_url);
-        Payments { stripe, mp, default_fee_bps, app_url }
+        Payments { stripe, mp, fees, app_url }
     }
 
     pub fn is_live(&self, p: Provider) -> bool {
@@ -79,8 +94,8 @@ impl Payments {
         }
     }
 
-    pub fn fee_cents(&self, total_cents: i64, override_bps: Option<i64>) -> i64 {
-        total_cents * override_bps.unwrap_or(self.default_fee_bps) / 10_000
+    pub fn fee_cents(&self, total_cents: i64, override_bps: Option<i64>, country: &str) -> i64 {
+        total_cents * override_bps.unwrap_or_else(|| self.fees.for_country(country)) / 10_000
     }
 }
 

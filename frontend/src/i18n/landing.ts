@@ -387,4 +387,3 @@ const ar: LandingStrings = {
 export const LANDING: Record<LangCode, LandingStrings> = { en, pt, es, fr, zh, hi, ar }
 
 /** Easy Pay's fee on each paid sale. */
-export const FEE_RATE = 0.0198

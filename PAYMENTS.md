@@ -9,7 +9,8 @@ Easy Pay picks the payment provider by the seller's country:
 
 If a provider has no credentials, its sellers run in **demo mode** (simulated payments) — the app always works.
 
-**Your revenue**: `PLATFORM_FEE_BPS` (300 = 3%) is kept on every paid sale — Mercado Pago `marketplace_fee`,
+**Your revenue**: `PLATFORM_FEE_BPS_BR` (default 150 = 1.5%, Brazil) and `PLATFORM_FEE_BPS` (default 100 = 1%, other
+countries) are kept on every paid sale — Mercado Pago `marketplace_fee`,
 Stripe `application_fee_amount`. You can give any seller a custom fee in **/admin → Accounts → seller**.
 The fee is stored on each link (`platform_fee_cents`), so the admin panel shows exactly what you earned per seller.
 Demo payments record the fee too, so you can see the numbers before going live.
@@ -33,7 +34,7 @@ Code: `backend/src/payments.rs` (Stripe + provider choice), `backend/src/mercado
    MP_CLIENT_SECRET=...
    MP_WEBHOOK_SECRET=...
    SECRETS_KEY=<openssl rand -hex 32>   # encrypts sellers' tokens — set once, never change
-   PLATFORM_FEE_BPS=300                 # 3% for you (optional)
+   PLATFORM_FEE_BPS_BR=150              # 1.5% for you (default)
    MP_SANDBOX=true                      # while testing with test users; remove for production
    ```
 6. Test: create **test users** (seller + buyer) in the developer panel. Log in to Easy Pay as a Brazilian seller →
@@ -57,6 +58,16 @@ trusted — the payment is fetched from Mercado Pago with the seller's token and
    ```
 5. Test (test mode): log in as a US seller → Settings → **Connect with Stripe** → finish test onboarding →
    create a link → pay with `4242 4242 4242 4242`. Local: `stripe listen --forward-to localhost:8080/api/webhooks/stripe`.
+
+## Public pricing page
+
+`/pricing` shows, per payment method, the provider fee + your fee + total + when the money arrives
+(Brazil: Pix, card 30 days / now, boleto; US: cards & wallets, international cards). Your fee comes from the
+server config; provider prices live in `frontend/src/lib/pricing.ts` (checked September 2026) — update them
+when Mercado Pago or Stripe change prices.
+
+Heads-up (US): Stripe Connect Express charges **the platform** about $2 per active seller per month plus
+0.25% + 25¢ per payout. With a 1% fee you need roughly $250+/month in sales per active US seller to cover it.
 
 ## 3. Emails (verification, password reset)
 

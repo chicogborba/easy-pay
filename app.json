@@ -51,8 +51,8 @@
       "required": false
     },
     "PLATFORM_FEE_BPS": {
-      "description": "Platform fee in basis points (300 = 3%).",
-      "value": "0"
+      "description": "Platform fee outside Brazil, basis points (100 = 1%).",
+      "value": "100"
     },
     "MP_CLIENT_ID": {
       "description": "Mercado Pago app Client ID (Brazil). Empty = demo payments for Brazilian sellers.",
@@ -77,6 +77,10 @@
     "EMAIL_FROM": {
       "description": "Sender, e.g. Easy Pay <no-reply@yourdomain.com>.",
       "required": false
+    },
+    "PLATFORM_FEE_BPS_BR": {
+      "description": "Platform fee in Brazil, basis points (150 = 1.5%).",
+      "value": "150"
     }
   }
 }

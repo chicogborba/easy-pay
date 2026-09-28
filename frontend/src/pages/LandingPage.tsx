@@ -2,7 +2,10 @@ import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowRight, Check, ChevronDown, Copy, Link2, Mic, Plus, Send } from 'lucide-react'
 import { LANGS, type LangCode } from '../i18n/strings'
-import { FEE_RATE, LANDING, type LandingStrings } from '../i18n/landing'
+import { LANDING, type LandingStrings } from '../i18n/landing'
+import { PRICING } from '../i18n/pricing'
+import { DEFAULT_FEES } from '../lib/pricing'
+import { guessCountry } from '../lib/profile'
 import { localeOf, useApp } from '../lib/app'
 import { Button, cx, Squiggle } from '../components/ui'
 import { Confetti, Reveal, TypingDots, useCountUp, useInView, useScene3D, WriteOn } from '../components/motion'
@@ -10,9 +13,17 @@ import { WhatsAppLogo } from '../components/ShareActions'
 
 /* ---------- helpers ---------- */
 
+/** Our fee for the visitor's likely country (Brazil vs everyone else), straight from the server. */
+function useFeeRate() {
+  const { settings, server } = useApp()
+  const fees = server.fees ?? DEFAULT_FEES
+  return (guessCountry(settings.lang) === 'BR' ? fees.br : fees.intl) / 10_000
+}
+
 function useLanding() {
   const { settings } = useApp()
-  const fee = new Intl.NumberFormat(localeOf(settings.lang), { style: 'percent', minimumFractionDigits: 2 }).format(FEE_RATE)
+  const FEE_RATE = useFeeRate()
+  const fee = new Intl.NumberFormat(localeOf(settings.lang), { style: 'percent', maximumFractionDigits: 2 }).format(FEE_RATE)
   const l = (key: keyof LandingStrings, vars: Record<string, string> = {}) => {
     let s = LANDING[settings.lang][key] ?? LANDING.en[key]
     for (const [k, v] of Object.entries({ fee, ...vars })) s = s.split(`{${k}}`).join(v)
@@ -140,7 +151,7 @@ function Nav({ onStart }: { onStart: () => void }) {
             <a
               key={id}
               href={`#${id}`}
-              onClick={(e) => (e.preventDefault(), scrollToId(id))}
+              onClick={(e) => (e.preventDefault(), id === 'price' ? navigate('/pricing') : scrollToId(id))}
               className="group relative text-xl text-pencil/70 transition-colors hover:text-pencil"
             >
               {l(key)}
@@ -553,6 +564,8 @@ function HowItWorks() {
 function Pricing() {
   const { settings, fmt } = useApp()
   const { l } = useLanding()
+  const FEE_RATE = useFeeRate()
+  const navigate = useNavigate()
   const [ref, inView] = useInView<HTMLDivElement>()
   const pct = useCountUp(FEE_RATE * 10000, 1200, inView) / 10000
   const shownFee = new Intl.NumberFormat(localeOf(settings.lang), { style: 'percent', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(
@@ -632,6 +645,12 @@ function Pricing() {
               <span className="font-heading text-2xl font-bold">{l('calcYou')}</span>
               <span className="font-heading text-4xl font-bold text-leaf tabular-nums md:text-5xl">{fmt(Math.round(shownYou))}</span>
             </div>
+            <button
+              onClick={() => navigate('/pricing')}
+              className="mt-6 text-lg text-pen underline decoration-wavy underline-offset-4"
+            >
+              {PRICING[settings.lang].seeAll} →
+            </button>
           </div>
         </Reveal>
       </div>
