@@ -67,7 +67,7 @@ function Kicker({ children }: { children: ReactNode }) {
 /* ---------- page ---------- */
 
 export default function LandingPage() {
-  const { settings } = useApp()
+  const { me } = useApp()
   const navigate = useNavigate()
   const { l } = useLanding()
 
@@ -80,7 +80,7 @@ export default function LandingPage() {
   })
 
   // The live demo is the app itself.
-  const start = () => navigate(settings.onboarded ? '/' : '/onboarding')
+  const start = () => navigate(me ? '/' : '/signup')
 
   return (
     <div className="min-h-full overflow-x-clip">
@@ -103,7 +103,8 @@ export default function LandingPage() {
 /* ---------- nav ---------- */
 
 function Nav({ onStart }: { onStart: () => void }) {
-  const { settings, update } = useApp()
+  const { settings, update, me, t } = useApp()
+  const navigate = useNavigate()
   const { l } = useLanding()
   const [scrolled, setScrolled] = useState(false)
   useEffect(() => {
@@ -162,6 +163,11 @@ function Nav({ onStart }: { onStart: () => void }) {
           </select>
           <ChevronDown aria-hidden strokeWidth={3} className="pointer-events-none absolute end-2 top-1/2 h-4 w-4 -translate-y-1/2" />
         </label>
+        {!me && (
+          <button onClick={() => navigate('/login')} className="min-h-[44px] px-2 text-lg font-bold text-pen underline decoration-wavy underline-offset-4">
+            {t('loginCta')}
+          </button>
+        )}
         <Button variant="accent" onClick={onStart} className="hidden !min-h-[44px] !text-lg sm:inline-flex">
           <span className="relative flex h-2.5 w-2.5">
             <span className="absolute inset-0 animate-ping rounded-full bg-white/70" />

@@ -14,20 +14,42 @@ import ProductDetailPage from './pages/ProductDetailPage'
 import CustomersPage from './pages/CustomersPage'
 import CustomerDetailPage from './pages/CustomerDetailPage'
 import PayPage from './pages/PayPage'
-import OnboardingPage from './pages/OnboardingPage'
+import AuthPage from './pages/AuthPage'
+import AdminPage from './pages/AdminPage'
+import { Spinner } from './components/ui'
 import LandingPage from './pages/LandingPage'
 
-/** First visit: the landing page explains the product, then onboarding. */
+function Loading() {
+  return (
+    <div className="flex h-[100dvh] items-center justify-center">
+      <Spinner className="h-10 w-10" />
+    </div>
+  )
+}
+
+/** Seller app: logged-out visitors see the landing page first. */
 function MerchantApp() {
-  const { settings } = useApp()
-  if (!settings.onboarded) return <Navigate to="/welcome" replace />
+  const { me } = useApp()
+  if (me === undefined) return <Loading />
+  if (!me) return <Navigate to="/welcome" replace />
   return <Layout />
 }
 
-function Onboarding() {
-  const { settings } = useApp()
-  if (settings.onboarded) return <Navigate to="/" replace />
-  return <OnboardingPage />
+/** Sign up / log in are only for logged-out visitors. */
+function Guest({ mode }: { mode: 'signup' | 'login' }) {
+  const { me } = useApp()
+  if (me === undefined) return <Loading />
+  if (me) return <Navigate to="/" replace />
+  return <AuthPage mode={mode} />
+}
+
+/** Platform owner only (email in ADMIN_EMAILS on the server). */
+function Admin() {
+  const { me } = useApp()
+  if (me === undefined) return <Loading />
+  if (!me) return <Navigate to="/login" replace />
+  if (!me.is_admin) return <Navigate to="/" replace />
+  return <AdminPage />
 }
 
 createRoot(document.getElementById('root')!).render(
@@ -39,7 +61,10 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/p/:id" element={<PayPage />} />
           {/* Public landing page + first-run setup */}
           <Route path="/welcome" element={<LandingPage />} />
-          <Route path="/onboarding" element={<Onboarding />} />
+          <Route path="/signup" element={<Guest mode="signup" />} />
+          <Route path="/login" element={<Guest mode="login" />} />
+          <Route path="/onboarding" element={<Navigate to="/signup" replace />} />
+          <Route path="/admin/*" element={<Admin />} />
           {/* Merchant app */}
           <Route element={<MerchantApp />}>
             <Route index element={<ChatPage />} />

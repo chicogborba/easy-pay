@@ -15,6 +15,18 @@ Mobile-first web app for small sellers: describe the sale in a chat (text or voi
 - Languages (English by default until the user picks one): English, 中文, हिन्दी, Español, العربية (RTL), Français, Português.
 - Hand-drawn design system (Kalam / Patrick Hand, wobbly borders, hard shadows) — tokens in `frontend/tailwind.config.js`.
 
+- **Accounts** – sign up / log in (email + password, argon2, HttpOnly session cookie). Data made on a device before accounts existed moves into the new account. Settings: business, language, currency, change password, log out.
+- **Platform admin** (`/admin`, emails in `ADMIN_EMAILS`) – accounts, active users (7/30 days), money processed per currency, AI/voice/link usage per account, sign-ups and links per day, suspend/reactivate accounts.
+- **Payments** – demo mode by default; Stripe Checkout + Connect ready to switch on (see [STRIPE.md](STRIPE.md)).
+
+## Scaling
+
+- Stateless app: sessions live in Postgres, so you can run several instances behind a load balancer.
+- Lists are paginated (`/api/links?before=&limit=`), the "you got paid" poll hits an indexed query (`/api/links/updates?since=`), dashboards only load the last ~8 weeks, and admin numbers are SQL aggregates.
+- Indexes on every hot path; connection pool size via `DATABASE_POOL_SIZE`; gzip; 90 s request timeout; graceful shutdown; `/api/health` checks the database.
+- Per-seller AI rate limit (`AI_REQUESTS_PER_MINUTE`) and login/sign-up throttling (in-memory per instance — use Redis if you need exact global limits).
+- Usage is tracked in `usage_events` (AI chat, voice, tips, links created) for the admin panel and future plans/billing.
+
 ## Stack
 
 | | |
@@ -78,11 +90,19 @@ The browser records audio, converts it to 16 kHz mono WAV, and `POST /api/transc
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/config` | `{ ai, voice }` |
+| GET | `/api/health` | load balancer check (DB) |
+| GET | `/api/config` | `{ ai, voice, payments: mock\|stripe }` |
+| POST | `/api/auth/register` · `/login` · `/logout` | `{ email, password, business_name?, lang?, currency? }` |
+| GET | `/api/auth/me` | current account |
+| POST | `/api/account` · `/account/password` · `/account/stripe/onboard` | seller settings / Stripe Connect |
+| GET/POST | `/api/admin/overview` · `/admin/accounts` · `/admin/accounts/:id` · `/:id/status` | platform admin |
+| POST | `/api/links/:id/checkout` | Stripe Checkout URL `{ name, phone, email? }` |
+| POST | `/api/webhooks/stripe` | Stripe events (signature checked) |
 | POST | `/api/chat` | `{ messages, lang, currency }` → `{ reply, draft }` |
 | POST | `/api/chat/stream` | same body; NDJSON: `{delta}` per reply token from OpenRouter, then `{done: {reply, draft, choices}}` |
 | POST | `/api/transcribe` | `{ audio_base64, lang }` → `{ text }` |
-| GET/POST | `/api/links` | merchant (`X-Merchant-Id` header) |
+| GET/POST | `/api/links?status=&before=&limit=` | seller, paginated / create |
+| GET | `/api/links/updates?since=` | seller, links paid since a timestamp |
 | GET | `/api/links/:id` | public (payer data only for the owner) |
 | POST | `/api/links/:id/cancel` | merchant |
 | POST | `/api/links/:id/pay` | public, **mock** `{ method: apple_pay \| google_pay \| card, name, phone, email? }` |
@@ -94,7 +114,7 @@ The browser records audio, converts it to 16 kHz mono WAV, and `POST /api/transc
 | GET | `/api/customers?currency=BRL` | merchant, CRM list |
 | GET/POST | `/api/customers/:id` | merchant, detail / update `{ name?, note? }` |
 
-POC auth: each device gets a random merchant id in `localStorage`.
+Seller routes need a session (cookie `ep_session`, or `Authorization: Bearer <token>`).
 
 ## Next steps
 

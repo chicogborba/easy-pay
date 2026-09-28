@@ -6,27 +6,62 @@ import { timeAgo, useApp } from '../lib/app'
 import { itemsTitle } from '../components/Receipt'
 import { Button, cx, Spinner, StatusSticker, Underline } from '../components/ui'
 
-/** Loads the merchant's links and keeps them fresh while the screen is open. */
-export function useLinks() {
-  const [links, setLinks] = useState<Link[] | null>(null)
+const PAGE = 50
+
+/**
+ * The merchant's links, one page at a time. The first page refreshes every few seconds
+ * (so new payments show up); older pages load on demand.
+ */
+export function useLinks(status?: LinkStatus) {
+  const [first, setFirst] = useState<Link[] | null>(null)
+  const [older, setOlder] = useState<Link[]>([])
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+
   useEffect(() => {
     let alive = true
-    const load = () => api.links().then((l) => alive && setLinks(l)).catch(() => alive && setLinks((c) => c ?? []))
+    setFirst(null)
+    setOlder([])
+    const load = () =>
+      api
+        .links({ status, limit: PAGE })
+        .then((l) => {
+          if (!alive) return
+          setFirst(l)
+          setHasMore((h) => h || l.length === PAGE)
+        })
+        .catch(() => alive && setFirst((c) => c ?? []))
     load()
-    const id = window.setInterval(load, 5000)
+    const id = window.setInterval(load, 8000)
     return () => {
       alive = false
       clearInterval(id)
     }
-  }, [])
-  return links
+  }, [status])
+
+  const all = first === null ? null : [...first, ...older.filter((o) => !first.some((f) => f.id === o.id))]
+
+  const loadMore = async () => {
+    const last = all?.[all.length - 1]
+    if (!last) return
+    setLoadingMore(true)
+    try {
+      const page = await api.links({ status, before: last.created_at, limit: PAGE })
+      setOlder((o) => [...o, ...page])
+      setHasMore(page.length === PAGE)
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  return { links: all, hasMore, loadMore, loadingMore }
 }
 
 export default function LinksPage() {
   const { t, fmt, settings } = useApp()
-  const links = useLinks()
   const navigate = useNavigate()
   const [filter, setFilter] = useState<'all' | LinkStatus>('all')
+  const { links, hasMore, loadMore, loadingMore } = useLinks(filter === 'all' ? undefined : filter)
 
   const filters: { key: 'all' | LinkStatus; label: string }[] = [
     { key: 'all', label: t('all') },
@@ -100,6 +135,13 @@ export default function LinksPage() {
             </li>
           ))}
         </ul>
+      )}
+      {links && links.length > 0 && hasMore && (
+        <div className="mt-6 flex justify-center">
+          <Button variant="secondary" onClick={loadMore} disabled={loadingMore} icon={loadingMore ? <Spinner /> : undefined}>
+            {t('loadMore')}
+          </Button>
+        </div>
       )}
     </div>
   )

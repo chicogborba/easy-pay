@@ -104,18 +104,23 @@ export function Layout() {
 /** Polls the merchant's links and celebrates new payments, wherever they are in the app. */
 function usePaymentWatcher() {
   const { t, fmt, toast } = useApp()
-  const known = useRef<Set<string> | null>(null)
+  // Server-time cursor + ids already celebrated (a small overlap avoids missing a payment).
+  const cursor = useRef<number | null>(null)
+  const seen = useRef(new Set<string>())
 
   useEffect(() => {
     let alive = true
     const tick = async () => {
       try {
-        const links = await api.links()
-        const paid = links.filter((l) => l.status === 'paid')
-        if (known.current) {
-          for (const l of paid) if (!known.current.has(l.id)) toast(`💰 ${t('newPayment', { amount: fmt(l.total_cents, l.currency) })}`)
+        const first = cursor.current === null
+        const res = await api.linkUpdates(first ? Date.now() + 60_000 : cursor.current!)
+        if (!alive) return
+        for (const l of res.paid) {
+          if (seen.current.has(l.id)) continue
+          seen.current.add(l.id)
+          if (!first) toast(`💰 ${t('newPayment', { amount: fmt(l.total_cents, l.currency) })}`)
         }
-        if (alive) known.current = new Set(paid.map((l) => l.id))
+        cursor.current = res.now - 15_000
       } catch {
         /* offline: try again next tick */
       }

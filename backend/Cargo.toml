@@ -5,6 +5,10 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
+argon2 = "0.5"
+base64 = "0.22"
+hex = "0.4"
+hmac = "0.12"
 axum = "0.7"
 dotenvy = "0.15"
 rand = "0.8"
@@ -13,8 +17,14 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace", "compression-gzip", "timeout"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+urlencoding = "2"
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }

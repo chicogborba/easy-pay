@@ -2,13 +2,24 @@
   "name": "Easy Pay",
   "description": "Chat with AI to create payment links with itemized receipts (payments mocked).",
   "repository": "https://github.com/chicogborba/easy-pay",
-  "keywords": ["rust", "axum", "react", "payments", "openrouter"],
+  "keywords": [
+    "rust",
+    "axum",
+    "react",
+    "payments",
+    "openrouter"
+  ],
   "stack": "container",
   "formation": {
-    "web": { "quantity": 1, "size": "basic" }
+    "web": {
+      "quantity": 1,
+      "size": "basic"
+    }
   },
   "addons": [
-    { "plan": "heroku-postgresql:essential-0" }
+    {
+      "plan": "heroku-postgresql:essential-0"
+    }
   ],
   "env": {
     "OPENROUTER_API_KEY": {
@@ -22,6 +33,26 @@
     "OPENROUTER_AUDIO_MODEL": {
       "description": "Audio-capable model for voice notes.",
       "value": "google/gemini-2.5-flash"
+    },
+    "ADMIN_EMAILS": {
+      "description": "Emails that can open the platform admin panel at /admin (comma-separated).",
+      "required": false
+    },
+    "APP_URL": {
+      "description": "Public URL of the app, e.g. https://my-easy-pay.herokuapp.com (used for Stripe redirects).",
+      "required": false
+    },
+    "STRIPE_SECRET_KEY": {
+      "description": "Leave empty for demo payments. See STRIPE.md.",
+      "required": false
+    },
+    "STRIPE_WEBHOOK_SECRET": {
+      "description": "Signing secret of the Stripe webhook endpoint.",
+      "required": false
+    },
+    "PLATFORM_FEE_BPS": {
+      "description": "Platform fee in basis points (300 = 3%).",
+      "value": "0"
     }
   }
 }

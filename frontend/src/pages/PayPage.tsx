@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { ArrowRight, CreditCard, Lock, Store, UserRound } from 'lucide-react'
 import { api, ApiError, type Link, type Payer, type PayMethod } from '../lib/api'
 import { useApp, type T } from '../lib/app'
@@ -35,7 +35,10 @@ const validPhone = (p: string) => {
 /** Public page the customer opens. Payment is MOCKED — see README to plug in Stripe. */
 export default function PayPage() {
   const { id = '' } = useParams()
-  const { t, fmt, settings, update } = useApp()
+  const { t, fmt, settings, update, server } = useApp()
+  const [params] = useSearchParams()
+  const returnedFromStripe = params.get('paid') === '1'
+  const [redirecting, setRedirecting] = useState(false)
   const [link, setLink] = useState<Link | null | undefined>()
   const [paying, setPaying] = useState<PayMethod | null>(null)
   const [showCard, setShowCard] = useState(false)
@@ -51,6 +54,37 @@ export default function PayPage() {
   // Empty name/phone tells the server to use the customer's saved details.
   const apiPayer: Payer | null = usingKnown ? { name: '', phone: '', email: '' } : payer
   const payerName = usingKnown ? known!.name : payer?.name
+
+  // Back from Stripe: the webhook marks the link paid a moment later, so poll briefly.
+  useEffect(() => {
+    if (!returnedFromStripe || link?.status !== 'waiting') return
+    let tries = 0
+    const iv = window.setInterval(() => {
+      tries++
+      api.link(id).then((l) => {
+        setLink(l)
+        if (l.status === 'paid') setJustPaid(true)
+      })
+      if (tries > 30) clearInterval(iv)
+    }, 2000)
+    return () => clearInterval(iv)
+  }, [returnedFromStripe, link?.status, id])
+
+  /** Real payments: hand over to Stripe Checkout (Apple Pay, Google Pay, cards, Pix...). */
+  const stripeCheckout = async () => {
+    if (!apiPayer) return
+    setRedirecting(true)
+    setError('')
+    try {
+      const { url } = await api.checkout(id, apiPayer)
+      window.location.href = url
+    } catch (e) {
+      setRedirecting(false)
+      if (e instanceof ApiError && e.status === 409 && e.message.includes('not ready')) setError(t('sellerNotReady'))
+      else if (e instanceof ApiError && e.status === 409) api.link(id).then(setLink)
+      else setError(t('errorGeneric'))
+    }
+  }
 
   useEffect(() => {
     api.link(id).then(setLink).catch(() => setLink(null))
@@ -155,24 +189,53 @@ export default function PayPage() {
                     {t('change')}
                   </button>
                 </div>
-                <p className="pt-2 text-center font-heading text-2xl font-bold">{t('payWith')}</p>
-
-                <WalletButton label="Apple Pay" logo={<AppleLogo />} busy={paying === 'apple_pay'} disabled={!!paying} onClick={() => pay('apple_pay')} />
-                <WalletButton label="Google Pay" logo={<GoogleLogo />} busy={paying === 'google_pay'} disabled={!!paying} onClick={() => pay('google_pay')} />
-
-                {!showCard ? (
-                  <Button block size="lg" icon={<CreditCard strokeWidth={2.5} />} disabled={!!paying} onClick={() => setShowCard(true)}>
-                    {t('card')}
-                  </Button>
+                {server.payments === 'stripe' ? (
+                  returnedFromStripe ? (
+                    <p className="flex items-center justify-center gap-3 py-4 text-2xl">
+                      <Spinner /> {t('confirming')}
+                    </p>
+                  ) : (
+                    <>
+                      <Button
+                        variant="accent"
+                        size="lg"
+                        block
+                        disabled={redirecting}
+                        onClick={stripeCheckout}
+                        icon={redirecting ? <Spinner className="border-white border-t-transparent" /> : <Lock strokeWidth={2.5} />}
+                      >
+                        {redirecting ? t('redirecting') : t('payNow', { amount: fmt(link.total_cents, link.currency) })}
+                      </Button>
+                      <div className="flex items-center justify-center gap-3 text-pencil/60" aria-hidden>
+                        <AppleLogo dark />
+                        <GoogleLogo />
+                        <CreditCard strokeWidth={2.5} />
+                      </div>
+                    </>
+                  )
                 ) : (
-                  <CardForm
-                    t={t}
-                    holder={payerName ?? ''}
-                    amount={fmt(link.total_cents, link.currency)}
-                    busy={paying === 'card'}
-                    disabled={!!paying}
-                    onPay={() => pay('card')}
-                  />
+                  <>
+                <p className="pt-2 text-center font-heading text-2xl font-bold">{t('payWith')}</p>
+  
+                  <WalletButton label="Apple Pay" logo={<AppleLogo />} busy={paying === 'apple_pay'} disabled={!!paying} onClick={() => pay('apple_pay')} />
+                  <WalletButton label="Google Pay" logo={<GoogleLogo />} busy={paying === 'google_pay'} disabled={!!paying} onClick={() => pay('google_pay')} />
+  
+                  {!showCard ? (
+                    <Button block size="lg" icon={<CreditCard strokeWidth={2.5} />} disabled={!!paying} onClick={() => setShowCard(true)}>
+                      {t('card')}
+                    </Button>
+                  ) : (
+                    <CardForm
+                      t={t}
+                      holder={payerName ?? ''}
+                      amount={fmt(link.total_cents, link.currency)}
+                      busy={paying === 'card'}
+                      disabled={!!paying}
+                      onPay={() => pay('card')}
+                    />
+                  )}
+  
+                  </>
                 )}
 
                 {error && <p className="text-center text-lg text-marker">{error}</p>}
@@ -186,7 +249,7 @@ export default function PayPage() {
 
           <footer className="mt-12 space-y-4 border-t-2 border-dashed border-pencil/30 pt-6">
             <LanguagePicker compact value={settings.lang} onChange={(lang) => update({ lang })} />
-            <p className="text-center text-base text-pencil/50">{t('demoNote')}</p>
+            {server.payments !== 'stripe' && <p className="text-center text-base text-pencil/50">{t('demoNote')}</p>}
           </footer>
         </>
       )}
@@ -312,9 +375,9 @@ function CardForm({ t, holder, amount, busy, disabled, onPay }: { t: T; holder: 
   )
 }
 
-function AppleLogo() {
+function AppleLogo({ dark }: { dark?: boolean }) {
   return (
-    <svg viewBox="0 0 24 24" className="h-7 w-7 fill-white" aria-hidden>
+    <svg viewBox="0 0 24 24" className={cx('h-7 w-7', dark ? 'fill-pencil' : 'fill-white')} aria-hidden>
       <path d="M16.37 12.62c-.02-2.2 1.8-3.26 1.88-3.31-1.03-1.5-2.62-1.7-3.18-1.73-1.35-.14-2.64.8-3.33.8-.69 0-1.74-.78-2.87-.76-1.47.02-2.83.86-3.59 2.18-1.53 2.66-.39 6.59 1.1 8.75.73 1.05 1.6 2.24 2.73 2.2 1.1-.05 1.51-.71 2.84-.71 1.32 0 1.7.71 2.86.69 1.18-.02 1.93-1.07 2.65-2.13.84-1.22 1.18-2.4 1.2-2.46-.03-.01-2.3-.88-2.32-3.5zM14.2 6.16c.6-.73 1.01-1.75.9-2.76-.87.04-1.92.58-2.54 1.3-.56.64-1.05 1.67-.92 2.66.97.08 1.96-.49 2.56-1.2z" />
     </svg>
   )

@@ -88,6 +88,43 @@ async fn run_migrations(conn: &mut PgConnection) -> Result<()> {
         "ALTER TABLE links ADD COLUMN IF NOT EXISTS payer_phone TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE links ADD COLUMN IF NOT EXISTS payer_email TEXT NOT NULL DEFAULT ''",
         "CREATE INDEX IF NOT EXISTS idx_links_customer ON links(customer_id)",
+        "CREATE INDEX IF NOT EXISTS idx_links_merchant_paid ON links(merchant_id, paid_at) WHERE status = 'paid'",
+        "ALTER TABLE links ADD COLUMN IF NOT EXISTS provider_ref TEXT",
+        // Seller accounts. `id` is the merchant_id used by every other table.
+        "CREATE TABLE IF NOT EXISTS accounts (
+             id                     TEXT PRIMARY KEY,
+             email                  TEXT NOT NULL UNIQUE,
+             password_hash          TEXT NOT NULL,
+             business_name          TEXT NOT NULL DEFAULT '',
+             lang                   TEXT NOT NULL DEFAULT 'en',
+             currency               TEXT NOT NULL DEFAULT 'USD',
+             status                 TEXT NOT NULL DEFAULT 'active',
+             plan                   TEXT NOT NULL DEFAULT 'free',
+             stripe_account_id      TEXT,
+             stripe_charges_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+             created_at             BIGINT NOT NULL,
+             last_seen_at           BIGINT
+         )",
+        "CREATE INDEX IF NOT EXISTS idx_accounts_created ON accounts(created_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_stripe ON accounts(stripe_account_id)",
+        // Login sessions (only a hash of the token is stored).
+        "CREATE TABLE IF NOT EXISTS sessions (
+             token_hash   TEXT PRIMARY KEY,
+             account_id   TEXT NOT NULL,
+             created_at   BIGINT NOT NULL,
+             expires_at   BIGINT NOT NULL,
+             last_seen_at BIGINT NOT NULL
+         )",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_account ON sessions(account_id)",
+        // What each account uses (AI calls, links...) for the platform admin panel.
+        "CREATE TABLE IF NOT EXISTS usage_events (
+             id         BIGSERIAL PRIMARY KEY,
+             account_id TEXT NOT NULL,
+             kind       TEXT NOT NULL,
+             created_at BIGINT NOT NULL
+         )",
+        "CREATE INDEX IF NOT EXISTS idx_usage_account ON usage_events(account_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at)",
     ] {
         sqlx::query(stmt).execute(&mut *conn).await?;
     }
@@ -203,14 +240,86 @@ pub async fn get_link(pool: &PgPool, id: &str) -> Result<Option<Link>> {
     Ok(row.as_ref().map(row_to_link).transpose()?)
 }
 
+/// Every link of a merchant (used by per-merchant analytics and the CRM).
 pub async fn list_links(pool: &PgPool, merchant: &str) -> Result<Vec<Link>> {
+    let rows = sqlx::query(&format!("SELECT {COLS} FROM links WHERE merchant_id = $1 ORDER BY created_at DESC"))
+        .bind(merchant)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.iter().map(row_to_link).collect::<Result<_, _>>()?)
+}
+
+/// One page of links, newest first (`before` = created_at of the last link already shown).
+pub async fn list_links_page(
+    pool: &PgPool,
+    merchant: &str,
+    status: Option<&str>,
+    before: Option<i64>,
+    limit: i64,
+) -> Result<Vec<Link>> {
     let rows = sqlx::query(&format!(
-        "SELECT {COLS} FROM links WHERE merchant_id = $1 ORDER BY created_at DESC LIMIT 2000"
+        "SELECT {COLS} FROM links
+         WHERE merchant_id = $1 AND ($2::TEXT IS NULL OR status = $2) AND ($3::BIGINT IS NULL OR created_at < $3)
+         ORDER BY created_at DESC LIMIT $4"
     ))
     .bind(merchant)
+    .bind(status)
+    .bind(before)
+    .bind(limit.clamp(1, 200))
     .fetch_all(pool)
     .await?;
     Ok(rows.iter().map(row_to_link).collect::<Result<_, _>>()?)
+}
+
+/// Links paid after `since` (cheap polling for the "you got paid" toast).
+pub async fn paid_since(pool: &PgPool, merchant: &str, since: i64) -> Result<Vec<Link>> {
+    let rows = sqlx::query(&format!(
+        "SELECT {COLS} FROM links WHERE merchant_id = $1 AND status = 'paid' AND paid_at > $2 ORDER BY paid_at LIMIT 50"
+    ))
+    .bind(merchant)
+    .bind(since)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().map(row_to_link).collect::<Result<_, _>>()?)
+}
+
+/// Waiting links plus links paid since `since`: all the time-windowed analytics need.
+async fn recent_links(pool: &PgPool, merchant: &str, since: i64) -> Result<Vec<Link>> {
+    let rows = sqlx::query(&format!(
+        "SELECT {COLS} FROM links
+         WHERE merchant_id = $1 AND (status = 'waiting' OR (status = 'paid' AND COALESCE(paid_at, created_at) >= $2))"
+    ))
+    .bind(merchant)
+    .bind(since)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().map(row_to_link).collect::<Result<_, _>>()?)
+}
+
+/// Records one use of a feature (fire-and-forget; never fails the request).
+pub fn track(pool: &PgPool, account: &str, kind: &'static str) {
+    let pool = pool.clone();
+    let account = account.to_string();
+    tokio::spawn(async move {
+        let r = sqlx::query("INSERT INTO usage_events (account_id, kind, created_at) VALUES ($1, $2, $3)")
+            .bind(account)
+            .bind(kind)
+            .bind(now_ms())
+            .execute(&pool)
+            .await;
+        if let Err(e) = r {
+            tracing::warn!("usage tracking failed: {e}");
+        }
+    });
+}
+
+pub async fn set_provider_ref(pool: &PgPool, id: &str, provider_ref: &str) -> Result<()> {
+    sqlx::query("UPDATE links SET provider_ref = $2 WHERE id = $1")
+        .bind(id)
+        .bind(provider_ref)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// Returns false when the link does not belong to the merchant or is not waiting.
@@ -574,7 +683,16 @@ impl Agg {
 }
 
 pub async fn stats(pool: &PgPool, merchant: &str, currency: &str, tz_offset_min: i64) -> Result<Stats> {
-    let links = list_links(pool, merchant).await?;
+    // Only the last ~8 weeks are needed in memory; all-time totals come from SQL.
+    let links = recent_links(pool, merchant, now_ms() - 58 * DAY_MS).await?;
+    let (paid_count, paid_total): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(total_cents), 0)::BIGINT FROM links
+         WHERE merchant_id = $1 AND status = 'paid' AND currency = $2",
+    )
+    .bind(merchant)
+    .bind(currency)
+    .fetch_one(pool)
+    .await?;
     let names = product_names(pool, merchant).await?;
     let offset = tz_offset_min * 60_000;
     let today = today_start(offset);
@@ -585,8 +703,8 @@ pub async fn stats(pool: &PgPool, merchant: &str, currency: &str, tz_offset_min:
 
     let mut s = Stats {
         currency: currency.to_string(),
-        paid_total_cents: 0,
-        paid_count: 0,
+        paid_total_cents: paid_total,
+        paid_count,
         waiting_total_cents: 0,
         waiting_count: 0,
         today_cents: 0,
@@ -607,8 +725,6 @@ pub async fn stats(pool: &PgPool, merchant: &str, currency: &str, tz_offset_min:
     let mut month = Agg::default();
 
     for (t, l) in paid_local(&links, currency, offset) {
-        s.paid_count += 1;
-        s.paid_total_cents += l.total_cents;
         if t >= today {
             s.today_cents += l.total_cents;
         }
@@ -649,7 +765,10 @@ pub async fn products(
     tz_offset_min: i64,
     days: Option<i64>,
 ) -> Result<Vec<ProductSummary>> {
-    let links = list_links(pool, merchant).await?;
+    let links = match days {
+        Some(d) => recent_links(pool, merchant, now_ms() - (d + 1) * DAY_MS).await?,
+        None => list_links(pool, merchant).await?,
+    };
     let names = product_names(pool, merchant).await?;
     let offset = tz_offset_min * 60_000;
     let since = days.map(|d| today_start(offset) - (d - 1) * DAY_MS).unwrap_or(i64::MIN);

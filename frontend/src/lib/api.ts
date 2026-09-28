@@ -66,7 +66,67 @@ export type ProductDetail = Omit<ProductSummary, 'id'> & {
   last_14_days: { day: string; quantity: number; total_cents: number }[]
   weekdays: number[]
 }
-export type ServerConfig = { ai: boolean; voice: boolean }
+export type ServerConfig = { ai: boolean; voice: boolean; payments?: 'mock' | 'stripe' }
+export type Account = {
+  id: string
+  email: string
+  business_name: string
+  lang: string
+  currency: string
+  status: string
+  plan: string
+  created_at: number
+  stripe_account_id: string | null
+  stripe_charges_enabled: boolean
+  is_admin: boolean
+}
+export type CurrencyTotal = { currency: string; cents: number; count: number }
+export type DayCount = { day: number; count: number }
+export type KindCount = { kind: string; count: number }
+export type AdminOverview = {
+  accounts_total: number
+  accounts_active_7d: number
+  accounts_active_30d: number
+  accounts_new_30d: number
+  accounts_stripe_ready: number
+  links_total: number
+  links_30d: number
+  customers_total: number
+  gmv_all: CurrencyTotal[]
+  gmv_30d: CurrencyTotal[]
+  usage_30d: KindCount[]
+  signups_by_day: DayCount[]
+  links_by_day: DayCount[]
+  payments_mode: string
+  ai_enabled: boolean
+}
+export type AdminAccountRow = {
+  id: string
+  email: string
+  business_name: string
+  currency: string
+  status: string
+  plan: string
+  created_at: number
+  last_seen_at: number | null
+  stripe_charges_enabled: boolean
+  links: number
+  paid_links: number
+  gmv_cents: number
+  customers: number
+  ai_calls_30d: number
+}
+export type AdminAccountDetail = {
+  account: Account
+  last_seen_at: number | null
+  gmv_all: CurrencyTotal[]
+  gmv_30d: CurrencyTotal[]
+  usage_30d: KindCount[]
+  usage_by_day: DayCount[]
+  links_by_day: DayCount[]
+  customers: number
+  recent_links: Link[]
+}
 
 export class ApiError extends Error {
   constructor(
@@ -77,23 +137,28 @@ export class ApiError extends Error {
   }
 }
 
-/** POC identity: a random id per device, sent on merchant-only calls. */
-export function merchantId(): string {
-  const KEY = 'ep.merchant'
-  let id = localStorage.getItem(KEY)
-  if (!id) {
-    id = crypto.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36)
-    localStorage.setItem(KEY, id)
-  }
-  return id
+/**
+ * Random id this device used before accounts existed. Sent once at sign-up so the
+ * links created in demo mode move into the new account. Never used for auth.
+ */
+export function legacyDeviceId(): string {
+  return localStorage.getItem('ep.merchant') ?? ''
 }
 
-async function req<T>(path: string, init: RequestInit = {}, merchant = false): Promise<T> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (merchant) headers['X-Merchant-Id'] = merchantId()
-  const res = await fetch(`/api${path}`, { ...init, headers: { ...headers, ...(init.headers as object) } })
+/** Any 401 means the session ended: the app listens for this and shows the login. */
+export const UNAUTHORIZED_EVENT = 'ep:unauthorized'
+
+// Auth is an HttpOnly session cookie, sent automatically on same-origin requests.
+// (The third parameter is kept for readability at call sites: true = seller-only route.)
+async function req<T>(path: string, init: RequestInit = {}, _seller = false): Promise<T> {
+  const res = await fetch(`/api${path}`, {
+    credentials: 'same-origin',
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...(init.headers as object) },
+  })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
+    if (res.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
     throw new ApiError(res.status, body.error ?? res.statusText)
   }
   return res.json()
@@ -118,7 +183,8 @@ const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.strin
 async function chatStream(messages: ChatMsg[], lang: string, currency: string, onDelta: (text: string) => void): Promise<ChatReply> {
   const res = await fetch('/api/chat/stream', {
     ...post({ messages, lang, currency }),
-    headers: { 'Content-Type': 'application/json', 'X-Merchant-Id': merchantId() },
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
   })
   if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ''))
   if (!res.body) return api.chat(messages, lang, currency)
@@ -144,13 +210,41 @@ async function chatStream(messages: ChatMsg[], lang: string, currency: string, o
   return done
 }
 
+export const auth = {
+  me: () => req<Account>('/auth/me'),
+  register: (body: { email: string; password: string; business_name: string; lang: string; currency: string; claim_id: string }) =>
+    req<Account>('/auth/register', post(body)),
+  login: (email: string, password: string) => req<Account>('/auth/login', post({ email, password })),
+  logout: () => req('/auth/logout', post({})),
+  update: (patch: { business_name?: string; lang?: string; currency?: string }) => req<Account>('/account', post(patch)),
+  changePassword: (current: string, next: string) => req('/account/password', post({ current, new: next })),
+  stripeOnboard: () => req<{ url: string }>('/account/stripe/onboard', post({})),
+}
+
+export const admin = {
+  overview: () => req<AdminOverview>('/admin/overview'),
+  accounts: (opts: { q?: string; sort?: string; limit?: number; offset?: number }) => {
+    const p = new URLSearchParams()
+    for (const [k, v] of Object.entries(opts)) if (v !== undefined && v !== '') p.set(k, String(v))
+    return req<{ total: number; accounts: AdminAccountRow[] }>(`/admin/accounts?${p}`)
+  },
+  account: (id: string) => req<AdminAccountDetail>(`/admin/accounts/${encodeURIComponent(id)}`),
+  setStatus: (id: string, status: 'active' | 'suspended') => req(`/admin/accounts/${encodeURIComponent(id)}/status`, post({ status })),
+}
+
 export const api = {
   config: () => req<ServerConfig>('/config'),
   chat: (messages: ChatMsg[], lang: string, currency: string) => req<ChatReply>('/chat', post({ messages, lang, currency }), true),
   chatStream,
   transcribe: (audio_base64: string, lang: string) => req<{ text: string }>('/transcribe', post({ audio_base64, lang })),
   createLink: (draft: Draft, business_name: string) => req<Link>('/links', post({ draft, business_name }), true),
-  links: () => req<Link[]>('/links', {}, true),
+  links: (opts: { status?: string; before?: number; limit?: number } = {}) => {
+    const p = new URLSearchParams()
+    for (const [k, v] of Object.entries(opts)) if (v !== undefined) p.set(k, String(v))
+    return req<Link[]>(`/links?${p}`, {}, true)
+  },
+  linkUpdates: (since: number) => req<{ now: number; paid: Link[] }>(`/links/updates?since=${since}`, {}, true),
+  checkout: (id: string, payer: Payer) => req<{ url: string }>(`/links/${encodeURIComponent(id)}/checkout`, post(payer)),
   // Sends the merchant id so the owner also sees who paid.
   link: (id: string) => req<Link>(`/links/${encodeURIComponent(id)}`, {}, true),
   cancel: (id: string) => req<Link>(`/links/${encodeURIComponent(id)}/cancel`, post({}), true),

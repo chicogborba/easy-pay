@@ -1,11 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { LANGS, STRINGS, type LangCode, type Strings } from '../i18n/strings'
-import { api, type ServerConfig } from './api'
+import { api, auth, UNAUTHORIZED_EVENT, type Account, type ServerConfig } from './api'
 
 export const CURRENCIES = ['USD', 'EUR', 'BRL', 'MXN', 'GBP', 'INR', 'CNY', 'ARS', 'COP', 'CAD'] as const
 
 /** `langPicked`: the person chose a language themselves; until then the app is in English. */
-export type Settings = { business: string; lang: LangCode; currency: string; onboarded: boolean; langPicked?: boolean }
+export type Settings = { business: string; lang: LangCode; currency: string; onboarded?: boolean; langPicked?: boolean }
 
 const KEY = 'ep.settings'
 
@@ -61,7 +61,12 @@ export function applyDocumentLang(lang: LangCode) {
 
 type Ctx = {
   settings: Settings
+  /** Changes settings; business, language and currency are also saved to the account. */
   update: (patch: Partial<Settings>) => void
+  /** The logged-in seller: undefined while checking, null when logged out. */
+  me: Account | null | undefined
+  signedIn: (a: Account) => void
+  logout: () => Promise<void>
   t: T
   fmt: (cents: number, currency?: string) => string
   server: ServerConfig
@@ -75,9 +80,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<Settings>(load)
   const [server, setServer] = useState<ServerConfig>({ ai: false, voice: false })
   const [toastMsg, setToastMsg] = useState<string | null>(null)
+  const [me, setMe] = useState<Account | null | undefined>(undefined)
+
+  // The account is the source of truth for business name, language and currency.
+  const signedIn = useCallback((a: Account) => {
+    setMe(a)
+    setSettings((s) => ({
+      ...s,
+      business: a.business_name,
+      currency: a.currency,
+      onboarded: true,
+      ...(STRINGS[a.lang as LangCode] ? { lang: a.lang as LangCode, langPicked: true } : {}),
+    }))
+  }, [])
 
   useEffect(() => {
     api.config().then(setServer).catch(() => {})
+    auth.me().then(signedIn).catch(() => setMe(null))
+    const onUnauthorized = () => setMe(null)
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized)
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized)
+  }, [signedIn])
+
+  const logout = useCallback(async () => {
+    await auth.logout().catch(() => {})
+    sessionStorage.clear()
+    setMe(null)
   }, [])
 
   useEffect(() => {
@@ -86,8 +114,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [settings])
 
   const update = useCallback(
-    (patch: Partial<Settings>) => setSettings((s) => ({ ...s, ...patch, ...(patch.lang ? { langPicked: true } : {}) })),
-    [],
+    (patch: Partial<Settings>) => {
+      setSettings((s) => ({ ...s, ...patch, ...(patch.lang ? { langPicked: true } : {}) }))
+      if (me && (patch.business !== undefined || patch.lang || patch.currency)) {
+        auth
+          .update({ business_name: patch.business, lang: patch.lang, currency: patch.currency })
+          .then(setMe)
+          .catch(() => {})
+      }
+    },
+    [me],
   )
 
   const toast = useCallback((msg: string) => {
@@ -99,13 +135,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => ({
       settings,
       update,
+      me,
+      signedIn,
+      logout,
       t: makeT(settings.lang),
       fmt: (c, cur) => money(c, cur ?? settings.currency, settings.lang),
       server,
       toast,
       toastMsg,
     }),
-    [settings, update, server, toast, toastMsg],
+    [settings, update, me, signedIn, logout, server, toast, toastMsg],
   )
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>
 }

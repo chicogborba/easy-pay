@@ -29,6 +29,15 @@ services:
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemini-2.5-flash}
       OPENROUTER_AUDIO_MODEL: ${OPENROUTER_AUDIO_MODEL:-google/gemini-2.5-flash}
       PORT: 8080
+      # Emails that can open /admin (comma-separated).
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      APP_URL: https://${DOMAIN}
+      # Real payments: leave empty for demo mode. See STRIPE.md.
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      PLATFORM_FEE_BPS: ${PLATFORM_FEE_BPS:-0}
+      AI_REQUESTS_PER_MINUTE: ${AI_REQUESTS_PER_MINUTE:-30}
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-10}
 
   # HTTPS with automatic Let's Encrypt certificates (needed for the microphone on phones).
   caddy:
