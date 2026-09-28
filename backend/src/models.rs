@@ -24,6 +24,9 @@ pub struct Draft {
     /// Who is buying, when the owner mentions it ("for Joana").
     #[serde(default)]
     pub customer: String,
+    /// Set when the owner starts the link from a customer's page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customer_id: Option<i64>,
 }
 
 impl Draft {
@@ -77,6 +80,16 @@ pub struct Link {
     pub payer_name: String,
     pub payer_phone: String,
     pub payer_email: String,
+    /// For links made for a known customer: enough for them to recognize
+    /// themselves at checkout ("Pay as Ana · phone ending 5678") without exposing the number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub known_customer: Option<KnownCustomer>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KnownCustomer {
+    pub name: String,
+    pub phone_last4: String,
 }
 
 impl Link {

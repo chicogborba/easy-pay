@@ -204,8 +204,17 @@ async fn list_links(State(s): State<AppState>, headers: HeaderMap) -> ApiResult<
 
 /// Public (the customer opens it), but who paid is only shown to the link's owner.
 async fn get_link(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult<Link> {
-    let link = db::get_link(&s.db, &id).await?.ok_or_else(not_found)?;
+    let mut link = db::get_link(&s.db, &id).await?.ok_or_else(not_found)?;
     let owner = merchant_id(&headers).is_ok_and(|m| m == link.merchant_id);
+    if link.status == "waiting" {
+        if let Some(cid) = link.customer_id {
+            if let Some((name, phone)) = db::customer_contact(&s.db, &link.merchant_id, cid).await? {
+                let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+                let last4 = digits[digits.len().saturating_sub(4)..].to_string();
+                link.known_customer = Some(KnownCustomer { name, phone_last4: last4 });
+            }
+        }
+    }
     Ok(Json(if owner { link } else { link.public() }))
 }
 
@@ -228,7 +237,6 @@ async fn pay_link(
         "apple_pay" | "google_pay" | "card" => req.method.clone(),
         _ => return Err(ApiError(StatusCode::BAD_REQUEST, "invalid method".into())),
     };
-    let payer = req.payer().map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.into()))?;
     // Simulate the processor taking a moment.
     tokio::time::sleep(std::time::Duration::from_millis(900)).await;
     let db = &s.db;
@@ -236,6 +244,17 @@ async fn pay_link(
     if link.status != "waiting" {
         return Err(ApiError(StatusCode::CONFLICT, link.status));
     }
+    // "It's me": a link made for a known customer can be paid without typing anything.
+    let mut req = req;
+    if req.name.trim().is_empty() && req.phone.trim().is_empty() {
+        if let Some(cid) = link.customer_id {
+            if let Some((name, phone)) = db::customer_contact(db, &link.merchant_id, cid).await? {
+                req.name = name;
+                req.phone = phone;
+            }
+        }
+    }
+    let payer = req.payer().map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.into()))?;
     // The UPDATE only matches a waiting link, so two payments can't both succeed.
     if !db::pay_link(db, &id, &method, &payer).await? {
         return Err(ApiError(StatusCode::CONFLICT, "paid".into()));

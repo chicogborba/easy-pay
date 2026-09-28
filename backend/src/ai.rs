@@ -374,6 +374,7 @@ fn parse_model_output(text: &str, default_currency: &str) -> Option<ChatResponse
             currency: d["currency"].as_str().unwrap_or(default_currency).to_string(),
             note: d["note"].as_str().unwrap_or("").to_string(),
             customer: d["customer"].as_str().unwrap_or("").to_string(),
+            customer_id: None,
         }
         .sanitize()
     });
@@ -494,7 +495,7 @@ fn local_parse(history: &[ChatMessage], default_currency: &str, lang: &str) -> C
         items.push(Item { name, quantity, total_cents: (price * 100.0).round() as i64, product: None, product_id: None });
     }
 
-    let draft = Draft { items, currency: currency.into(), note: String::new(), customer: String::new() }.sanitize();
+    let draft = Draft { items, currency: currency.into(), note: String::new(), customer: String::new(), customer_id: None }.sanitize();
     let reply = match (&draft, grouped) {
         (Some(_), true) => canned(lang, "together"),
         (Some(_), false) => canned(lang, "ok"),

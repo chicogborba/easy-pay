@@ -148,6 +148,10 @@ const en = {
   customersCount: "{n} customers",
   paidBy: "Paid by",
   seeCustomer: "See customer",
+  payingForQ: "Is this {name}?",
+  phoneEnding: "Phone ending in {last4}",
+  itsMe: "Yes, it's me",
+  notMe: "No, I am someone else",
 }
 
 export type Strings = typeof en
@@ -302,6 +306,10 @@ const es: Strings = {
   customersCount: "{n} clientes",
   paidBy: "Pagado por",
   seeCustomer: "Ver cliente",
+  payingForQ: "¿Eres {name}?",
+  phoneEnding: "Teléfono terminado en {last4}",
+  itsMe: "Sí, soy yo",
+  notMe: "No, soy otra persona",
 }
 
 const pt: Strings = {
@@ -454,6 +462,10 @@ const pt: Strings = {
   customersCount: "{n} clientes",
   paidBy: "Pago por",
   seeCustomer: "Ver cliente",
+  payingForQ: "Você é {name}?",
+  phoneEnding: "Telefone final {last4}",
+  itsMe: "Sim, sou eu",
+  notMe: "Não, sou outra pessoa",
 }
 
 const zh: Strings = {
@@ -606,6 +618,10 @@ const zh: Strings = {
   customersCount: "{n} 位顾客",
   paidBy: "付款人",
   seeCustomer: "查看顾客",
+  payingForQ: "你是 {name} 吗？",
+  phoneEnding: "手机尾号 {last4}",
+  itsMe: "是我",
+  notMe: "不是，我是别人",
 }
 
 const hi: Strings = {
@@ -758,6 +774,10 @@ const hi: Strings = {
   customersCount: "{n} ग्राहक",
   paidBy: "भुगतानकर्ता",
   seeCustomer: "ग्राहक देखें",
+  payingForQ: "क्या आप {name} हैं?",
+  phoneEnding: "फ़ोन के आख़िरी अंक {last4}",
+  itsMe: "हाँ, मैं ही हूँ",
+  notMe: "नहीं, मैं कोई और हूँ",
 }
 
 const ar: Strings = {
@@ -910,6 +930,10 @@ const ar: Strings = {
   customersCount: "{n} عملاء",
   paidBy: "دفع بواسطة",
   seeCustomer: "عرض العميل",
+  payingForQ: "هل أنت {name}؟",
+  phoneEnding: "الهاتف ينتهي بـ {last4}",
+  itsMe: "نعم، أنا",
+  notMe: "لا، أنا شخص آخر",
 }
 
 const fr: Strings = {
@@ -1062,6 +1086,10 @@ const fr: Strings = {
   customersCount: "{n} clients",
   paidBy: "Payé par",
   seeCustomer: "Voir le client",
+  payingForQ: "Êtes-vous {name} ?",
+  phoneEnding: "Téléphone se terminant par {last4}",
+  itsMe: "Oui, c'est moi",
+  notMe: "Non, je suis quelqu’un d’autre",
 }
 
 export const LANGS = [

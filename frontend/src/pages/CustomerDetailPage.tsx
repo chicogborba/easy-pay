@@ -113,7 +113,7 @@ export default function CustomerDetailPage() {
           block
           className="col-span-2"
           icon={<MessageCirclePlus strokeWidth={2.5} />}
-          onClick={() => navigate(`/?to=${encodeURIComponent(c.name)}`)}
+          onClick={() => navigate(`/?to=${encodeURIComponent(c.name)}&cid=${c.id}`)}
         >
           {t('newLinkFor', { first })}
         </Button>

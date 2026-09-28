@@ -1,5 +1,5 @@
 export type Item = { name: string; quantity: number; total_cents: number; product?: string; product_id?: number }
-export type Draft = { items: Item[]; currency: string; note: string; customer: string }
+export type Draft = { items: Item[]; currency: string; note: string; customer: string; customer_id?: number }
 export type LinkStatus = 'waiting' | 'paid' | 'cancelled'
 export type PayMethod = 'apple_pay' | 'google_pay' | 'card'
 export type Link = {
@@ -18,6 +18,8 @@ export type Link = {
   payer_name: string
   payer_phone: string
   payer_email: string
+  /** Only on waiting links made for a known customer. */
+  known_customer?: { name: string; phone_last4: string }
 }
 export type Payer = { name: string; phone: string; email: string }
 export type CustomerSummary = {

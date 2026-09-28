@@ -153,10 +153,20 @@ fn row_to_link(r: &PgRow) -> Result<Link, sqlx::Error> {
         payer_name: r.try_get("payer_name")?,
         payer_phone: r.try_get("payer_phone")?,
         payer_email: r.try_get("payer_email")?,
+        known_customer: None,
     })
 }
 
 pub async fn create_link(pool: &PgPool, merchant: &str, business: &str, draft: &Draft) -> Result<Link> {
+    // A link made for a known customer is tied to them (only the merchant's own customers).
+    let mut customer_id = None;
+    let mut customer_name = draft.customer.clone();
+    if let Some(id) = draft.customer_id {
+        if let Some(c) = customer_rows(pool, merchant, Some(id)).await?.pop() {
+            customer_id = Some(c.id);
+            customer_name = c.name;
+        }
+    }
     let mut tx = pool.begin().await?;
     let mut items = draft.items.clone();
     for it in &mut items {
@@ -166,8 +176,8 @@ pub async fn create_link(pool: &PgPool, merchant: &str, business: &str, draft: &
     }
     let id = new_id();
     sqlx::query(
-        "INSERT INTO links (id, merchant_id, business_name, items_json, currency, total_cents, note, created_at, customer)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        "INSERT INTO links (id, merchant_id, business_name, items_json, currency, total_cents, note, created_at, customer, customer_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(&id)
     .bind(merchant)
@@ -177,7 +187,8 @@ pub async fn create_link(pool: &PgPool, merchant: &str, business: &str, draft: &
     .bind(draft.total_cents())
     .bind(&draft.note)
     .bind(now_ms())
-    .bind(&draft.customer)
+    .bind(&customer_name)
+    .bind(customer_id)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -439,6 +450,11 @@ async fn customer_rows(pool: &PgPool, merchant: &str, id: Option<i64>) -> Result
             })
         })
         .collect::<Result<_, sqlx::Error>>()?)
+}
+
+/// Name and phone of one of the merchant's customers.
+pub async fn customer_contact(pool: &PgPool, merchant: &str, id: i64) -> Result<Option<(String, String)>> {
+    Ok(customer_rows(pool, merchant, Some(id)).await?.pop().map(|c| (c.name, c.phone)))
 }
 
 fn summarize(c: CustomerRow, links: &[Link], currency: &str) -> CustomerSummary {
@@ -748,7 +764,7 @@ mod tests {
     }
 
     fn draft(items: Vec<Item>) -> Draft {
-        Draft { items, currency: "BRL".into(), note: String::new(), customer: String::new() }
+        Draft { items, currency: "BRL".into(), note: String::new(), customer: String::new(), customer_id: None }
     }
 
     #[tokio::test]
@@ -834,5 +850,30 @@ mod tests {
         let l = get_link(&db, &a.id).await.unwrap().unwrap();
         assert_eq!(l.payer_name, "Ana");
         assert!(l.public().payer_phone.is_empty());
+    }
+
+    #[tokio::test]
+    async fn links_for_a_known_customer() {
+        let Some(db) = pool().await else { return };
+        let m = merchant();
+        let first = create_link(&db, &m, "", &draft(vec![item("Bolo", None)])).await.unwrap();
+        pay_link(&db, &first.id, "card", &payer("Francisco Borba", "+55 51 99999-1234")).await.unwrap();
+        let cid = customers(&db, &m, "BRL").await.unwrap()[0].id;
+
+        let mut d = draft(vec![item("Pão", None)]);
+        d.customer_id = Some(cid);
+        let l = create_link(&db, &m, "", &d).await.unwrap();
+        assert_eq!(l.customer_id, Some(cid));
+        assert_eq!(l.customer, "Francisco Borba");
+        // Shows up in the customer's history while still waiting.
+        let det = customer_detail(&db, &m, cid, "BRL").await.unwrap().unwrap();
+        assert!(det.links.iter().any(|x| x.id == l.id && x.status == "waiting"));
+        assert_eq!(customer_contact(&db, &m, cid).await.unwrap().unwrap().1, "+55 51 99999-1234");
+
+        // Someone else's customer id is ignored.
+        let mut other = draft(vec![item("Pão", None)]);
+        other.customer_id = Some(cid);
+        let x = create_link(&db, "another-merchant", "", &other).await.unwrap();
+        assert_eq!(x.customer_id, None);
     }
 }

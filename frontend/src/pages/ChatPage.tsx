@@ -16,6 +16,7 @@ type Entry =
   | { kind: 'link'; link: Link }
 
 const STORE = 'ep.chat'
+const TARGET_STORE = 'ep.chat.target'
 const MAX_RECORD_MS = 60_000
 
 function loadEntries(): Entry[] {
@@ -65,11 +66,24 @@ export default function ChatPage() {
 
   useEffect(() => () => recorder.current?.cancel(), [])
 
-  // "New link for Ana" from a customer's page: start the message for the owner.
+  // "New link for Ana" from a customer's page: the next link is tied to her record.
+  const [target, setTarget] = useState<{ id: number; name: string } | null>(() => {
+    try {
+      return JSON.parse(sessionStorage.getItem(TARGET_STORE) ?? 'null')
+    } catch {
+      return null
+    }
+  })
+  useEffect(() => {
+    sessionStorage.setItem(TARGET_STORE, JSON.stringify(target))
+  }, [target])
+
   const [params, setParams] = useSearchParams()
   useEffect(() => {
     const to = params.get('to')
     if (!to) return
+    const cid = Number(params.get('cid'))
+    if (cid) setTarget({ id: cid, name: to })
     setText(t('linkForPrefill', { name: to }))
     setParams({}, { replace: true })
     setTimeout(() => inputRef.current?.focus(), 50)
@@ -129,7 +143,8 @@ export default function ChatPage() {
   const accept = async (index: number, draft: Draft) => {
     setBusy('creating')
     try {
-      const link = await api.createLink(draft, settings.business)
+      const link = await api.createLink(target ? { ...draft, customer_id: target.id } : draft, settings.business)
+      setTarget(null)
       setEntries((cur) => [
         ...cur.map((e, i) => (i === index && e.kind === 'draft' ? { ...e, state: 'done' as const } : e)),
         { kind: 'link', link },
@@ -372,6 +387,17 @@ export default function ChatPage() {
         )}
         <div ref={endRef} />
       </div>
+
+      {target && (
+        <div className="flex items-center justify-center border-t-2 border-dashed border-pencil/40 bg-paper/90 px-4 pt-2">
+          <span className="inline-flex max-w-full items-center gap-2 rounded-wobblySm border-2 border-pencil bg-postit px-3 py-1 text-lg shadow-hardSm">
+            <span className="truncate">👤 {t('forCustomer', { name: target.name })}</span>
+            <button type="button" onClick={() => setTarget(null)} aria-label={t('cancel')} className="shrink-0 font-heading font-bold text-marker">
+              ✕
+            </button>
+          </span>
+        </div>
+      )}
 
       {/* Composer: mic when empty (like WhatsApp), send arrow when there's text. */}
       <form

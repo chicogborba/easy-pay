@@ -42,17 +42,26 @@ export default function PayPage() {
   const [justPaid, setJustPaid] = useState(false)
   const [error, setError] = useState('')
   const [payer, setPayer] = useState<Payer | null>(loadPayer)
+  // Link made for a known customer: they just confirm "it's me" instead of typing.
+  const [knownChoice, setKnownChoice] = useState<'yes' | 'no' | null>(null)
+  const known = link?.known_customer
+  const rememberedIsKnown = !!known && !!payer && payer.phone.replace(/\D/g, '').endsWith(known.phone_last4)
+  const askKnown = !!known && knownChoice === null && !rememberedIsKnown
+  const usingKnown = !!known && knownChoice === 'yes'
+  // Empty name/phone tells the server to use the customer's saved details.
+  const apiPayer: Payer | null = usingKnown ? { name: '', phone: '', email: '' } : payer
+  const payerName = usingKnown ? known!.name : payer?.name
 
   useEffect(() => {
     api.link(id).then(setLink).catch(() => setLink(null))
   }, [id])
 
   const pay = async (method: PayMethod) => {
-    if (!payer) return
+    if (!apiPayer) return
     setPaying(method)
     setError('')
     try {
-      setLink(await api.pay(id, method, payer))
+      setLink(await api.pay(id, method, apiPayer))
       setJustPaid(true)
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) api.link(id).then(setLink)
@@ -108,7 +117,18 @@ export default function PayPage() {
             ) : link.status === 'cancelled' ? (
               <p className="text-center text-2xl text-pencil/70">{t('linkInactive')}</p>
             ) : (
-              !payer ? (
+              askKnown ? (
+                <div className="space-y-4 text-center">
+                  <p className="font-heading text-3xl font-bold">{t('payingForQ', { name: known!.name })}</p>
+                  <p className="text-lg text-pencil/60">{t('phoneEnding', { last4: known!.phone_last4 })}</p>
+                  <Button variant="accent" size="lg" block icon={<UserRound strokeWidth={2.5} />} onClick={() => setKnownChoice('yes')}>
+                    {t('itsMe')}
+                  </Button>
+                  <Button variant="ghost" block onClick={() => setKnownChoice('no')}>
+                    {t('notMe')}
+                  </Button>
+                </div>
+              ) : !apiPayer ? (
                 <PayerForm
                   business={link.business_name || 'Easy Pay'}
                   dial={DIAL[link.currency] ?? ''}
@@ -125,8 +145,13 @@ export default function PayPage() {
               <div className="space-y-4">
                 <div className="flex items-center gap-3 rounded-wobblySm border-2 border-dashed border-pencil bg-white px-4 py-2">
                   <UserRound strokeWidth={2.5} className="shrink-0 text-pen" />
-                  <p className="min-w-0 flex-1 truncate text-lg">{t('payingAs', { name: payer.name })}</p>
-                  <button onClick={() => setPayer(null)} disabled={!!paying} className="shrink-0 text-lg text-pen underline decoration-wavy underline-offset-4">
+                  <p className="min-w-0 flex-1 truncate text-lg">{t('payingAs', { name: payerName ?? '' })}</p>
+                  <button
+                    onClick={() => {
+                      setPayer(null)
+                      if (known) setKnownChoice('no')
+                    }}
+                    disabled={!!paying} className="shrink-0 text-lg text-pen underline decoration-wavy underline-offset-4">
                     {t('change')}
                   </button>
                 </div>
@@ -142,7 +167,7 @@ export default function PayPage() {
                 ) : (
                   <CardForm
                     t={t}
-                    holder={payer.name}
+                    holder={payerName ?? ''}
                     amount={fmt(link.total_cents, link.currency)}
                     busy={paying === 'card'}
                     disabled={!!paying}
