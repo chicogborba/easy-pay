@@ -125,6 +125,36 @@ async fn run_migrations(conn: &mut PgConnection) -> Result<()> {
          )",
         "CREATE INDEX IF NOT EXISTS idx_usage_account ON usage_events(account_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at)",
+        // What the platform earns on each payment.
+        "ALTER TABLE links ADD COLUMN IF NOT EXISTS provider TEXT",
+        "ALTER TABLE links ADD COLUMN IF NOT EXISTS fee_bps BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE links ADD COLUMN IF NOT EXISTS platform_fee_cents BIGINT NOT NULL DEFAULT 0",
+        // Seller profile (what a real payments business needs to know about its sellers).
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS owner_name TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS phone TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS country TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS business_type TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS document TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS city TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS terms_accepted_at BIGINT",
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_verified_at BIGINT",
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS fee_bps_override BIGINT",
+        // Mercado Pago (OAuth) connection; tokens are stored encrypted.
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS mp_user_id TEXT",
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS mp_access_token TEXT",
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS mp_refresh_token TEXT",
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS mp_token_expires_at BIGINT",
+        "CREATE INDEX IF NOT EXISTS idx_accounts_mp_user ON accounts(mp_user_id)",
+        // One-time tokens: email verification, password reset, OAuth state.
+        "CREATE TABLE IF NOT EXISTS auth_tokens (
+             token_hash TEXT PRIMARY KEY,
+             account_id TEXT NOT NULL,
+             kind       TEXT NOT NULL,
+             expires_at BIGINT NOT NULL,
+             used_at    BIGINT
+         )",
     ] {
         sqlx::query(stmt).execute(&mut *conn).await?;
     }
@@ -169,7 +199,8 @@ pub fn normalize(s: &str) -> String {
 /* ---------------- links ---------------- */
 
 const COLS: &str = "id, merchant_id, business_name, items_json, currency, total_cents, note, status, created_at, \
-                    paid_at, paid_method, customer, customer_id, payer_name, payer_phone, payer_email";
+                    paid_at, paid_method, customer, customer_id, payer_name, payer_phone, payer_email, \
+                    provider, platform_fee_cents";
 
 fn row_to_link(r: &PgRow) -> Result<Link, sqlx::Error> {
     let items_json: String = r.try_get("items_json")?;
@@ -191,6 +222,9 @@ fn row_to_link(r: &PgRow) -> Result<Link, sqlx::Error> {
         payer_phone: r.try_get("payer_phone")?,
         payer_email: r.try_get("payer_email")?,
         known_customer: None,
+        provider: r.try_get("provider")?,
+        platform_fee_cents: r.try_get("platform_fee_cents")?,
+        payment_mode: None,
     })
 }
 
@@ -334,7 +368,17 @@ pub async fn cancel_link(pool: &PgPool, merchant: &str, id: &str) -> Result<bool
 
 /// Mock payment: flips a waiting link to paid and records who paid,
 /// creating or updating the merchant's customer (matched by phone).
+/// Demo payment with no platform fee (used by tests and old demo links).
+#[cfg(test)]
 pub async fn pay_link(pool: &PgPool, id: &str, method: &str, payer: &Payer) -> Result<bool> {
+    mark_paid(pool, id, "mock", method, payer, 0).await
+}
+
+/// Marks a waiting link paid, records the platform fee (seller's custom fee or `default_fee_bps`)
+/// and creates or updates the seller's customer (matched by phone).
+/// Returns false if the link was not waiting (already paid, cancelled or unknown), so
+/// duplicate webhooks are harmless.
+pub async fn mark_paid(pool: &PgPool, id: &str, provider: &str, method: &str, payer: &Payer, default_fee_bps: i64) -> Result<bool> {
     let mut tx = pool.begin().await?;
     let merchant: Option<String> =
         sqlx::query_scalar("SELECT merchant_id FROM links WHERE id = $1 AND status = 'waiting' FOR UPDATE")
@@ -362,9 +406,11 @@ pub async fn pay_link(pool: &PgPool, id: &str, method: &str, payer: &Payer) -> R
     .await?;
 
     sqlx::query(
-        "UPDATE links SET status = 'paid', paid_at = $2, paid_method = $3,
-                          customer_id = $4, payer_name = $5, payer_phone = $6, payer_email = $7
-         WHERE id = $1",
+        "UPDATE links l SET status = 'paid', paid_at = $2, paid_method = $3,
+                          customer_id = $4, payer_name = $5, payer_phone = $6, payer_email = $7, provider = $8,
+                          fee_bps = f.bps, platform_fee_cents = l.total_cents * f.bps / 10000
+         FROM (SELECT COALESCE((SELECT fee_bps_override FROM accounts WHERE id = $9), $10)::BIGINT AS bps) f
+         WHERE l.id = $1",
     )
     .bind(id)
     .bind(now_ms())
@@ -373,6 +419,9 @@ pub async fn pay_link(pool: &PgPool, id: &str, method: &str, payer: &Payer) -> R
     .bind(&payer.name)
     .bind(&payer.phone)
     .bind(&payer.email)
+    .bind(provider)
+    .bind(&merchant)
+    .bind(default_fee_bps)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;

@@ -1,17 +1,21 @@
 mod admin;
 mod ai;
 mod auth;
+mod checkout;
+mod crypto;
 mod db;
+mod email;
 mod limits;
+mod mercadopago;
 mod models;
 mod payments;
+mod profile;
 
 use std::{sync::Arc, time::Duration};
 
 use axum::{
-    body::Bytes,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -38,6 +42,7 @@ pub struct AppState {
     pub db: PgPool,
     pub ai: ai::Ai,
     pub payments: Payments,
+    pub mailer: email::Mailer,
     pub login_limiter: Arc<RateLimiter>,
     pub signup_limiter: Arc<RateLimiter>,
     /// Keeps AI costs bounded per seller.
@@ -61,7 +66,7 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
-fn not_found() -> ApiError {
+pub fn not_found() -> ApiError {
     ApiError(StatusCode::NOT_FOUND, "not found".into())
 }
 
@@ -89,11 +94,17 @@ async fn main() -> anyhow::Result<()> {
         db: db::connect(&db_url).await?,
         ai: ai::Ai::from_env(),
         payments: Payments::from_env(),
+        mailer: email::Mailer::from_env(),
         login_limiter: Arc::new(RateLimiter::new(10, Duration::from_secs(15 * 60))),
         signup_limiter: Arc::new(RateLimiter::new(20, Duration::from_secs(60 * 60))),
         ai_limiter: Arc::new(RateLimiter::new(per_min("AI_REQUESTS_PER_MINUTE", 30), Duration::from_secs(60))),
     };
-    tracing::info!("payments: {}", state.payments.mode());
+    tracing::info!(
+        stripe = state.payments.stripe.is_some(),
+        mercadopago = state.payments.mp.is_some(),
+        fee_bps = state.payments.default_fee_bps,
+        "payments"
+    );
     if !state.ai.enabled() {
         tracing::warn!("OPENROUTER_API_KEY not set: using the offline parser and voice is disabled");
     }
@@ -130,23 +141,32 @@ fn router(state: AppState) -> Router {
         .route("/auth/me", get(auth::me))
         .route("/account", post(auth::update_account))
         .route("/account/password", post(auth::change_password))
-        .route("/account/stripe/onboard", post(stripe_onboard))
+        .route("/account/profile", post(auth::update_profile))
+        .route("/account/verify/resend", post(auth::resend_verification))
+        .route("/account/payouts/connect", post(checkout::connect_payouts))
+        .route("/account/payouts/disconnect", post(checkout::disconnect_payouts))
+        .route("/auth/verify", post(auth::verify_email))
+        .route("/auth/forgot", post(auth::forgot_password))
+        .route("/auth/reset", post(auth::reset_password))
+        .route("/oauth/mercadopago/callback", get(checkout::mp_callback))
+        .route("/webhooks/mercadopago", post(checkout::mp_webhook))
         // platform admin
         .route("/admin/overview", get(admin::overview))
         .route("/admin/accounts", get(admin::accounts))
         .route("/admin/accounts/:id", get(admin::account_detail))
         .route("/admin/accounts/:id/status", post(admin::set_status))
+        .route("/admin/accounts/:id/fee", post(admin::set_fee))
         // payments
-        .route("/links/:id/checkout", post(checkout))
+        .route("/links/:id/checkout", post(checkout::checkout))
         .route("/links/updates", get(link_updates))
-        .route("/webhooks/stripe", post(stripe_webhook))
+        .route("/webhooks/stripe", post(checkout::stripe_webhook))
         .route("/chat", post(chat))
         .route("/chat/stream", post(chat_stream))
         .route("/transcribe", post(transcribe))
         .route("/links", get(list_links).post(create_link))
         .route("/links/:id", get(get_link))
         .route("/links/:id/cancel", post(cancel_link))
-        .route("/links/:id/pay", post(pay_link))
+        .route("/links/:id/pay", post(checkout::pay_link))
         .route("/stats", get(stats))
         .route("/products", get(list_products))
         .route("/products/:id", get(get_product))
@@ -173,7 +193,13 @@ fn router(state: AppState) -> Router {
 }
 
 async fn config(State(s): State<AppState>) -> Json<serde_json::Value> {
-    Json(json!({ "ai": s.ai.enabled(), "voice": s.ai.enabled(), "payments": s.payments.mode() }))
+    Json(json!({
+        "ai": s.ai.enabled(),
+        "voice": s.ai.enabled(),
+        // Which providers are live; a seller whose country's provider is off runs in demo mode.
+        "providers": { "stripe": s.payments.stripe.is_some(), "mercadopago": s.payments.mp.is_some() },
+        "fee_bps": s.payments.default_fee_bps,
+    }))
 }
 
 /// For load balancers / uptime checks: also proves the database answers.
@@ -295,6 +321,8 @@ async fn get_link(State(s): State<AppState>, merchant: Option<Merchant>, Path(id
     let mut link = db::get_link(&s.db, &id).await?.ok_or_else(not_found)?;
     let owner = merchant.is_some_and(|Merchant(m)| m == link.merchant_id);
     if link.status == "waiting" {
+        let seller = auth::account_by_id(&s.db, &link.merchant_id).await?;
+        link.payment_mode = Some(checkout::mode_for_seller(&s, seller.as_ref()).into());
         if let Some(cid) = link.customer_id {
             if let Some((name, phone)) = db::customer_contact(&s.db, &link.merchant_id, cid).await? {
                 let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
@@ -312,150 +340,6 @@ async fn cancel_link(State(s): State<AppState>, Merchant(merchant): Merchant, Pa
         return Err(ApiError(StatusCode::CONFLICT, "cannot cancel".into()));
     }
     db::get_link(db, &id).await?.map(Json).ok_or_else(not_found)
-}
-
-/// Who is paying: typed on the checkout page, or the saved customer when they tapped "it's me".
-async fn resolve_payer(s: &AppState, link: &Link, mut req: PayRequest) -> Result<Payer, ApiError> {
-    if req.name.trim().is_empty() && req.phone.trim().is_empty() {
-        if let Some(cid) = link.customer_id {
-            if let Some((name, phone)) = db::customer_contact(&s.db, &link.merchant_id, cid).await? {
-                req.name = name;
-                req.phone = phone;
-            }
-        }
-    }
-    req.payer().map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.into()))
-}
-
-/// A link can be paid only while waiting and while its seller's account is active.
-async fn payable_link(s: &AppState, id: &str) -> Result<(Link, auth::Account), ApiError> {
-    let link = db::get_link(&s.db, id).await?.ok_or_else(not_found)?;
-    if link.status != "waiting" {
-        return Err(ApiError(StatusCode::CONFLICT, link.status));
-    }
-    let seller = auth::account_by_id(&s.db, &link.merchant_id).await?;
-    match seller {
-        // Links made before accounts existed have no account row: still payable in demo mode.
-        None if matches!(s.payments, Payments::Mock) => {}
-        Some(a) if a.status == "active" => return Ok((link, a)),
-        _ => return Err(ApiError(StatusCode::CONFLICT, "unavailable".into())),
-    }
-    let placeholder = auth::Account {
-        id: link.merchant_id.clone(),
-        email: String::new(),
-        business_name: link.business_name.clone(),
-        lang: "en".into(),
-        currency: link.currency.clone(),
-        status: "active".into(),
-        plan: "free".into(),
-        created_at: 0,
-        stripe_account_id: None,
-        stripe_charges_enabled: false,
-        is_admin: false,
-    };
-    Ok((link, placeholder))
-}
-
-/// MOCK payment (demo mode). With Stripe enabled use /checkout instead.
-async fn pay_link(
-    State(s): State<AppState>,
-    Path(id): Path<String>,
-    Json(req): Json<PayRequest>,
-) -> ApiResult<Link> {
-    if !matches!(s.payments, Payments::Mock) && std::env::var("ALLOW_MOCK_PAYMENTS").as_deref() != Ok("true") {
-        return Err(ApiError(StatusCode::CONFLICT, "use checkout".into()));
-    }
-    let method = match req.method.as_str() {
-        "apple_pay" | "google_pay" | "card" => req.method.clone(),
-        _ => return Err(ApiError(StatusCode::BAD_REQUEST, "invalid method".into())),
-    };
-    // Simulate the processor taking a moment.
-    tokio::time::sleep(Duration::from_millis(900)).await;
-    let (link, _) = payable_link(&s, &id).await?;
-    let payer = resolve_payer(&s, &link, req).await?;
-    // The UPDATE only matches a waiting link, so two payments can't both succeed.
-    if !db::pay_link(&s.db, &id, &method, &payer).await? {
-        return Err(ApiError(StatusCode::CONFLICT, "paid".into()));
-    }
-    db::get_link(&s.db, &id).await?.map(|l| Json(l.public())).ok_or_else(not_found)
-}
-
-/// Real payments: returns the Stripe Checkout URL for this link.
-async fn checkout(State(s): State<AppState>, Path(id): Path<String>, Json(req): Json<PayRequest>) -> ApiResult<serde_json::Value> {
-    let Payments::Stripe(stripe) = &s.payments else {
-        return Err(ApiError(StatusCode::CONFLICT, "mock".into()));
-    };
-    let (link, seller) = payable_link(&s, &id).await?;
-    let payer = resolve_payer(&s, &link, req).await?;
-    let destination = seller.stripe_account_id.as_deref().filter(|_| seller.stripe_charges_enabled);
-    if destination.is_none() && stripe.require_connect {
-        return Err(ApiError(StatusCode::CONFLICT, "seller not ready to receive payments".into()));
-    }
-    let (session_id, url) = stripe.create_checkout(&link, &payer, destination).await?;
-    db::set_provider_ref(&s.db, &id, &session_id).await?;
-    Ok(Json(json!({ "url": url })))
-}
-
-/// Seller connects (or finishes connecting) their Stripe account to receive money.
-async fn stripe_onboard(State(s): State<AppState>, auth::CurrentAccount(a): auth::CurrentAccount) -> ApiResult<serde_json::Value> {
-    let Payments::Stripe(stripe) = &s.payments else {
-        return Err(ApiError(StatusCode::CONFLICT, "payments are in demo mode".into()));
-    };
-    let account = match a.stripe_account_id {
-        Some(acct) => acct,
-        None => {
-            let acct = stripe.create_account(&a.email, &a.id).await?;
-            sqlx::query("UPDATE accounts SET stripe_account_id = $2 WHERE id = $1")
-                .bind(&a.id)
-                .bind(&acct)
-                .execute(&s.db)
-                .await
-                .map_err(anyhow::Error::from)?;
-            acct
-        }
-    };
-    Ok(Json(json!({ "url": stripe.onboarding_link(&account).await? })))
-}
-
-/// Stripe → us. Signature-checked; idempotent (paying an already-paid link is a no-op).
-async fn stripe_webhook(State(s): State<AppState>, headers: HeaderMap, body: Bytes) -> Result<&'static str, ApiError> {
-    let Payments::Stripe(stripe) = &s.payments else { return Err(not_found()) };
-    let sig = headers.get("stripe-signature").and_then(|v| v.to_str().ok()).unwrap_or("");
-    if !payments::verify_webhook(&stripe.webhook_secret, &body, sig, db::now_ms() / 1000) {
-        return Err(ApiError(StatusCode::BAD_REQUEST, "bad signature".into()));
-    }
-    let event: serde_json::Value = serde_json::from_slice(&body).map_err(|_| ApiError(StatusCode::BAD_REQUEST, "bad json".into()))?;
-    let obj = &event["data"]["object"];
-    match event["type"].as_str().unwrap_or("") {
-        "checkout.session.completed" | "checkout.session.async_payment_succeeded" if obj["payment_status"] == "paid" => {
-            let link_id = obj["client_reference_id"].as_str().unwrap_or("");
-            let meta = &obj["metadata"];
-            let req = PayRequest {
-                method: "stripe".into(),
-                name: meta["payer_name"].as_str().unwrap_or("").into(),
-                phone: meta["payer_phone"].as_str().unwrap_or("").into(),
-                email: meta["payer_email"].as_str().unwrap_or("").into(),
-            };
-            if let Ok(payer) = req.payer() {
-                let paid = db::pay_link(&s.db, link_id, "stripe", &payer).await?;
-                tracing::info!(link = link_id, paid, "stripe payment confirmed");
-            } else {
-                tracing::warn!(link = link_id, "stripe payment without valid payer metadata");
-            }
-        }
-        "account.updated" => {
-            let acct = obj["id"].as_str().unwrap_or("");
-            let enabled = obj["charges_enabled"].as_bool().unwrap_or(false);
-            sqlx::query("UPDATE accounts SET stripe_charges_enabled = $2 WHERE stripe_account_id = $1")
-                .bind(acct)
-                .bind(enabled)
-                .execute(&s.db)
-                .await
-                .map_err(anyhow::Error::from)?;
-        }
-        _ => {}
-    }
-    Ok("ok")
 }
 
 async fn stats(State(s): State<AppState>, Merchant(merchant): Merchant, Query(q): Query<StatsQuery>) -> ApiResult<Stats> {
@@ -613,7 +497,8 @@ mod api_tests {
         let state = AppState {
             db: db::connect(&url).await.unwrap(),
             ai: ai::Ai::from_env(),
-            payments: Payments::Mock,
+            payments: Payments { stripe: None, mp: None, default_fee_bps: 0, app_url: "http://test".into() },
+            mailer: email::Mailer::from_env(),
             login_limiter: Arc::new(RateLimiter::new(100, Duration::from_secs(60))),
             signup_limiter: Arc::new(RateLimiter::new(100, Duration::from_secs(60))),
             ai_limiter: Arc::new(RateLimiter::new(100, Duration::from_secs(60))),
@@ -652,11 +537,25 @@ mod api_tests {
         assert_eq!(st, StatusCode::UNAUTHORIZED);
 
         // Sign up, then the same email can't sign up again.
-        let reg = json!({ "email": email, "password": "supersecret", "business_name": "Maria's Kitchen", "lang": "pt", "currency": "BRL" });
+        let reg = json!({
+            "email": email, "password": "supersecret", "business_name": "Maria's Kitchen", "lang": "pt",
+            "owner_name": "Maria Silva", "phone": "+55 11 91234-5678", "country": "BR",
+            "business_type": "individual", "document": "529.982.247-25", "category": "food", "accept_terms": true,
+        });
+        // Invalid CPF and missing terms are refused.
+        let mut bad = reg.clone();
+        bad["document"] = json!("111.111.111-11");
+        assert_eq!(call(&app, "POST", "/api/auth/register", None, bad).await.0, StatusCode::BAD_REQUEST);
+        let mut bad = reg.clone();
+        bad["accept_terms"] = json!(false);
+        assert_eq!(call(&app, "POST", "/api/auth/register", None, bad).await.0, StatusCode::BAD_REQUEST);
         let (st, me, cookie) = call(&app, "POST", "/api/auth/register", None, reg.clone()).await;
         assert_eq!(st, StatusCode::OK, "{me}");
         let cookie = cookie.expect("session cookie");
         assert_eq!(me["business_name"], "Maria's Kitchen");
+        assert_eq!(me["currency"], "BRL");
+        assert_eq!(me["payout_provider"], "mercadopago");
+        assert_eq!(me["email_verified"], false);
         let (st, _, _) = call(&app, "POST", "/api/auth/register", None, reg).await;
         assert_eq!(st, StatusCode::CONFLICT);
 
@@ -684,7 +583,10 @@ mod api_tests {
         assert_eq!(st, StatusCode::FORBIDDEN);
 
         // The platform owner can, and sees this seller.
-        let owner = json!({ "email": "owner@easypay.test", "password": "ownerpassword", "business_name": "Easy Pay" });
+        let owner = json!({
+            "email": "owner@easypay.test", "password": "ownerpassword", "business_name": "Easy Pay",
+            "owner_name": "Owner", "phone": "+1 415 555 0100", "country": "US", "business_type": "company", "accept_terms": true,
+        });
         let (_, _, oc) = call(&app, "POST", "/api/auth/register", None, owner.clone()).await;
         let oc = match oc {
             Some(c) => c,
@@ -700,9 +602,24 @@ mod api_tests {
         assert_eq!(row["paid_links"], 1);
         assert_eq!(row["gmv_cents"], 3000);
         let acct_id = row["id"].as_str().unwrap().to_string();
+        assert_eq!(row["country"], "BR");
+
+        // Custom 3% fee: the next payment earns the platform 3% (demo payments count too).
+        let (st, _, _) = call(&app, "POST", &format!("/api/admin/accounts/{acct_id}/fee"), Some(&oc), json!({ "fee_bps": 300 })).await;
+        assert_eq!(st, StatusCode::OK);
+        let draft2 = json!({ "draft": { "items": [{ "name": "Torta", "quantity": 1, "total_cents": 10000 }], "currency": "BRL" }, "business_name": "x" });
+        let (_, link2, _) = call(&app, "POST", "/api/links", Some(&cookie), draft2).await;
+        let id2 = link2["id"].as_str().unwrap().to_string();
+        let (_, public, _) = call(&app, "GET", &format!("/api/links/{id2}"), None, json!({})).await;
+        assert_eq!(public["payment_mode"], "mock");
+        call(&app, "POST", &format!("/api/links/{id2}/pay"), None, json!({ "method": "pix", "name": "Bia", "phone": "11977776666" })).await;
+        let (_, list, _) = call(&app, "GET", &format!("/api/admin/accounts?q={}&sort=revenue", email.split('@').next().unwrap()), Some(&oc), json!({})).await;
+        assert_eq!(list["accounts"][0]["revenue_cents"], 300);
         let (st, det, _) = call(&app, "GET", &format!("/api/admin/accounts/{acct_id}"), Some(&oc), json!({})).await;
         assert_eq!(st, StatusCode::OK, "{det}");
-        assert_eq!(det["customers"], 1);
+        assert_eq!(det["customers"], 2);
+        assert!(det["account"]["document"].as_str().unwrap().contains('•'), "document masked for admins");
+        assert_eq!(det["revenue_all"][0]["cents"], 300);
 
         // Suspending logs the seller out and blocks their links.
         let (st, _, _) = call(&app, "POST", &format!("/api/admin/accounts/{acct_id}/status"), Some(&oc), json!({ "status": "suspended" })).await;
@@ -711,6 +628,12 @@ mod api_tests {
         assert_eq!(st, StatusCode::UNAUTHORIZED);
         let (st, _, _) = call(&app, "POST", "/api/auth/login", None, json!({ "email": email, "password": "supersecret" })).await;
         assert_eq!(st, StatusCode::FORBIDDEN);
+
+        // Forgot password always answers OK (doesn't reveal which emails exist).
+        let (st, _, _) = call(&app, "POST", "/api/auth/forgot", None, json!({ "email": "nobody@nowhere.test" })).await;
+        assert_eq!(st, StatusCode::OK);
+        let (st, _, _) = call(&app, "POST", "/api/auth/reset", None, json!({ "token": "bogus", "password": "whatever123" })).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
 
         // Logout clears the session.
         let (st, _, _) = call(&app, "POST", "/api/auth/logout", Some(&oc), json!({})).await;

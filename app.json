@@ -43,7 +43,7 @@
       "required": false
     },
     "STRIPE_SECRET_KEY": {
-      "description": "Leave empty for demo payments. See STRIPE.md.",
+      "description": "Stripe secret key (US and other countries). Empty = demo payments. See PAYMENTS.md.",
       "required": false
     },
     "STRIPE_WEBHOOK_SECRET": {
@@ -53,6 +53,30 @@
     "PLATFORM_FEE_BPS": {
       "description": "Platform fee in basis points (300 = 3%).",
       "value": "0"
+    },
+    "MP_CLIENT_ID": {
+      "description": "Mercado Pago app Client ID (Brazil). Empty = demo payments for Brazilian sellers.",
+      "required": false
+    },
+    "MP_CLIENT_SECRET": {
+      "description": "Mercado Pago app Client Secret.",
+      "required": false
+    },
+    "MP_WEBHOOK_SECRET": {
+      "description": "Mercado Pago webhook secret signature.",
+      "required": false
+    },
+    "SECRETS_KEY": {
+      "description": "Encrypts sellers' payment tokens.",
+      "generator": "secret"
+    },
+    "RESEND_API_KEY": {
+      "description": "resend.com key for verification and password-reset emails.",
+      "required": false
+    },
+    "EMAIL_FROM": {
+      "description": "Sender, e.g. Easy Pay <no-reply@yourdomain.com>.",
+      "required": false
     }
   }
 }

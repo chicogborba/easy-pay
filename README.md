@@ -16,8 +16,10 @@ Mobile-first web app for small sellers: describe the sale in a chat (text or voi
 - Hand-drawn design system (Kalam / Patrick Hand, wobbly borders, hard shadows) — tokens in `frontend/tailwind.config.js`.
 
 - **Accounts** – sign up / log in (email + password, argon2, HttpOnly session cookie). Data made on a device before accounts existed moves into the new account. Settings: business, language, currency, change password, log out.
-- **Platform admin** (`/admin`, emails in `ADMIN_EMAILS`) – accounts, active users (7/30 days), money processed per currency, AI/voice/link usage per account, sign-ups and links per day, suspend/reactivate accounts.
-- **Payments** – demo mode by default; Stripe Checkout + Connect ready to switch on (see [STRIPE.md](STRIPE.md)).
+- **Platform admin** (`/admin`; chicogborba@gmail.com + `ADMIN_EMAILS`) – what you earned, accounts, active users (7/30 days), sellers by country and who is receiving money, money processed per currency, AI/voice/link usage per seller, sign-ups and links per day, seller details, custom fee, suspend/reactivate.
+- **Payments** – Brazil: **Mercado Pago** (Pix, card, boleto; sellers connect with OAuth). US & others: **Stripe** (Checkout + Connect). Demo mode until credentials are set. See [PAYMENTS.md](PAYMENTS.md).
+- **Platform revenue** – a fee per paid sale (`PLATFORM_FEE_BPS`, custom per seller in the admin panel), stored per payment; the admin panel shows what you earned in total and per seller.
+- **Real sign-up** – 3 short steps: about you (name, WhatsApp, email, password), your business (country, type, CPF/CNPJ validated for Brazil, what you sell, city), terms; then connect Mercado Pago / Stripe (or later). Email verification and password reset (Resend, or logged in dev). Terms & privacy templates at `/terms` and `/privacy`.
 
 ## Scaling
 
@@ -94,9 +96,13 @@ The browser records audio, converts it to 16 kHz mono WAV, and `POST /api/transc
 | GET | `/api/config` | `{ ai, voice, payments: mock\|stripe }` |
 | POST | `/api/auth/register` · `/login` · `/logout` | `{ email, password, business_name?, lang?, currency? }` |
 | GET | `/api/auth/me` | current account |
-| POST | `/api/account` · `/account/password` · `/account/stripe/onboard` | seller settings / Stripe Connect |
-| GET/POST | `/api/admin/overview` · `/admin/accounts` · `/admin/accounts/:id` · `/:id/status` | platform admin |
-| POST | `/api/links/:id/checkout` | Stripe Checkout URL `{ name, phone, email? }` |
+| POST | `/api/account` · `/account/profile` · `/account/password` | seller settings |
+| POST | `/api/account/payouts/connect` · `/disconnect` | Stripe onboarding / Mercado Pago OAuth |
+| POST | `/api/auth/verify` · `/auth/forgot` · `/auth/reset` · `/account/verify/resend` | email flows |
+| GET | `/api/oauth/mercadopago/callback` | Mercado Pago OAuth return |
+| POST | `/api/webhooks/mercadopago` | Mercado Pago payments |
+| GET/POST | `/api/admin/overview` · `/admin/accounts` · `/admin/accounts/:id` · `/:id/status` · `/:id/fee` | platform admin |
+| POST | `/api/links/:id/checkout` | Stripe / Mercado Pago checkout URL `{ name, phone, email? }` |
 | POST | `/api/webhooks/stripe` | Stripe events (signature checked) |
 | POST | `/api/chat` | `{ messages, lang, currency }` → `{ reply, draft }` |
 | POST | `/api/chat/stream` | same body; NDJSON: `{delta}` per reply token from OpenRouter, then `{done: {reply, draft, choices}}` |

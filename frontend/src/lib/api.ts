@@ -18,6 +18,10 @@ export type Link = {
   payer_name: string
   payer_phone: string
   payer_email: string
+  provider?: string | null
+  platform_fee_cents?: number
+  /** On waiting links: how the customer can pay right now. */
+  payment_mode?: PaymentMode
   /** Only on waiting links made for a known customer. */
   known_customer?: { name: string; phone_last4: string }
 }
@@ -66,7 +70,8 @@ export type ProductDetail = Omit<ProductSummary, 'id'> & {
   last_14_days: { day: string; quantity: number; total_cents: number }[]
   weekdays: number[]
 }
-export type ServerConfig = { ai: boolean; voice: boolean; payments?: 'mock' | 'stripe' }
+export type PaymentMode = 'mock' | 'stripe' | 'mercadopago'
+export type ServerConfig = { ai: boolean; voice: boolean; providers?: { stripe: boolean; mercadopago: boolean }; fee_bps?: number }
 export type Account = {
   id: string
   email: string
@@ -79,6 +84,29 @@ export type Account = {
   stripe_account_id: string | null
   stripe_charges_enabled: boolean
   is_admin: boolean
+  owner_name: string
+  phone: string
+  country: string
+  business_type: string
+  document: string
+  category: string
+  city: string
+  state: string
+  email_verified: boolean
+  fee_bps_override: number | null
+  payout_provider: 'stripe' | 'mercadopago'
+  payout_connected: boolean
+}
+export type ProfileInput = {
+  owner_name: string
+  phone: string
+  country: string
+  business_name: string
+  business_type: string
+  document: string
+  category: string
+  city: string
+  state: string
 }
 export type CurrencyTotal = { currency: string; cents: number; count: number }
 export type DayCount = { day: number; count: number }
@@ -94,16 +122,27 @@ export type AdminOverview = {
   customers_total: number
   gmv_all: CurrencyTotal[]
   gmv_30d: CurrencyTotal[]
+  revenue_all: CurrencyTotal[]
+  revenue_30d: CurrencyTotal[]
+  accounts_payouts_connected: number
+  accounts_verified: number
+  by_country: { country: string; accounts: number; connected: number }[]
+  default_fee_bps: number
+  providers: { stripe: boolean; mercadopago: boolean }
   usage_30d: KindCount[]
   signups_by_day: DayCount[]
   links_by_day: DayCount[]
-  payments_mode: string
   ai_enabled: boolean
 }
 export type AdminAccountRow = {
   id: string
   email: string
   business_name: string
+  owner_name: string
+  country: string
+  fee_bps_override: number | null
+  payouts_connected: boolean
+  revenue_cents: number
   currency: string
   status: string
   plan: string
@@ -121,6 +160,9 @@ export type AdminAccountDetail = {
   last_seen_at: number | null
   gmv_all: CurrencyTotal[]
   gmv_30d: CurrencyTotal[]
+  revenue_all: CurrencyTotal[]
+  revenue_30d: CurrencyTotal[]
+  default_fee_bps: number
   usage_30d: KindCount[]
   usage_by_day: DayCount[]
   links_by_day: DayCount[]
@@ -212,13 +254,19 @@ async function chatStream(messages: ChatMsg[], lang: string, currency: string, o
 
 export const auth = {
   me: () => req<Account>('/auth/me'),
-  register: (body: { email: string; password: string; business_name: string; lang: string; currency: string; claim_id: string }) =>
+  register: (body: ProfileInput & { email: string; password: string; lang: string; claim_id: string; accept_terms: boolean }) =>
     req<Account>('/auth/register', post(body)),
+  updateProfile: (p: ProfileInput) => req<Account>('/account/profile', post(p)),
+  verify: (token: string) => req('/auth/verify', post({ token })),
+  resendVerification: () => req('/account/verify/resend', post({})),
+  forgot: (email: string) => req('/auth/forgot', post({ email })),
+  reset: (token: string, password: string) => req('/auth/reset', post({ token, password })),
+  connectPayouts: () => req<{ url: string }>('/account/payouts/connect', post({})),
+  disconnectPayouts: () => req<Account>('/account/payouts/disconnect', post({})),
   login: (email: string, password: string) => req<Account>('/auth/login', post({ email, password })),
   logout: () => req('/auth/logout', post({})),
   update: (patch: { business_name?: string; lang?: string; currency?: string }) => req<Account>('/account', post(patch)),
   changePassword: (current: string, next: string) => req('/account/password', post({ current, new: next })),
-  stripeOnboard: () => req<{ url: string }>('/account/stripe/onboard', post({})),
 }
 
 export const admin = {
@@ -230,6 +278,7 @@ export const admin = {
   },
   account: (id: string) => req<AdminAccountDetail>(`/admin/accounts/${encodeURIComponent(id)}`),
   setStatus: (id: string, status: 'active' | 'suspended') => req(`/admin/accounts/${encodeURIComponent(id)}/status`, post({ status })),
+  setFee: (id: string, fee_bps: number | null) => req(`/admin/accounts/${encodeURIComponent(id)}/fee`, post({ fee_bps })),
 }
 
 export const api = {

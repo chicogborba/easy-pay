@@ -1,6 +1,6 @@
-//! Payments: a mock provider for demos and Stripe (Checkout + Connect) for real money.
+//! Payments: demo mode, Stripe (US & most countries) and Mercado Pago (Brazil, see mercadopago.rs).
 //!
-//! Stripe turns on by setting STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET. See STRIPE.md.
+//! Stripe turns on by setting STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET. See PAYMENTS.md.
 //! Flow:
 //!   1. Seller connects a Stripe Express account (POST /api/account/stripe/onboard).
 //!   2. Customer fills name/phone, POST /api/links/:id/checkout returns a Stripe Checkout URL
@@ -16,10 +16,79 @@ use crate::models::{Link, Payer};
 
 const API: &str = "https://api.stripe.com/v1";
 
+/// Which provider a seller uses, by country: Brazil → Mercado Pago, everyone else → Stripe.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Provider {
+    Stripe,
+    MercadoPago,
+}
+
+pub fn provider_for_country(country: &str) -> Provider {
+    match country.to_uppercase().as_str() {
+        "BR" => Provider::MercadoPago,
+        _ => Provider::Stripe,
+    }
+}
+
+/// Configured payment providers. A provider without credentials means its sellers run
+/// in demo mode (simulated payments), so the app is always usable.
 #[derive(Clone)]
-pub enum Payments {
-    Mock,
-    Stripe(Stripe),
+pub struct Payments {
+    pub stripe: Option<Stripe>,
+    pub mp: Option<crate::mercadopago::MercadoPago>,
+    /// Platform fee in basis points (300 = 3%) unless the seller has a custom fee.
+    pub default_fee_bps: i64,
+    pub app_url: String,
+}
+
+impl Payments {
+    pub fn from_env() -> Self {
+        let app_url = std::env::var("APP_URL").unwrap_or_else(|_| "http://localhost:5173".into()).trim_end_matches('/').to_string();
+        let default_fee_bps = std::env::var("PLATFORM_FEE_BPS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let stripe = std::env::var("STRIPE_SECRET_KEY").ok().filter(|k| !k.trim().is_empty()).map(|key| {
+            let webhook_secret = std::env::var("STRIPE_WEBHOOK_SECRET").unwrap_or_default();
+            if webhook_secret.is_empty() {
+                tracing::warn!("STRIPE_WEBHOOK_SECRET not set: Stripe payments will never be confirmed");
+            }
+            Stripe {
+                http: reqwest::Client::new(),
+                secret_key: key.trim().to_string(),
+                webhook_secret,
+                app_url: app_url.clone(),
+                require_connect: std::env::var("STRIPE_REQUIRE_CONNECT").map(|v| v != "false").unwrap_or(true),
+            }
+        });
+        let mp = crate::mercadopago::MercadoPago::from_env(&app_url);
+        Payments { stripe, mp, default_fee_bps, app_url }
+    }
+
+    pub fn is_live(&self, p: Provider) -> bool {
+        match p {
+            Provider::Stripe => self.stripe.is_some(),
+            Provider::MercadoPago => self.mp.is_some(),
+        }
+    }
+
+    /// "stripe" / "mercadopago" when real payments are on for this country, else "mock".
+    pub fn mode_for(&self, country: &str) -> &'static str {
+        let p = provider_for_country(country);
+        match (p, self.is_live(p)) {
+            (Provider::Stripe, true) => "stripe",
+            (Provider::MercadoPago, true) => "mercadopago",
+            _ => "mock",
+        }
+    }
+
+    pub fn fee_cents(&self, total_cents: i64, override_bps: Option<i64>) -> i64 {
+        total_cents * override_bps.unwrap_or(self.default_fee_bps) / 10_000
+    }
+}
+
+pub fn provider_name(p: Provider) -> &'static str {
+    match p {
+        Provider::Stripe => "stripe",
+        Provider::MercadoPago => "mercadopago",
+    }
 }
 
 #[derive(Clone)]
@@ -27,40 +96,10 @@ pub struct Stripe {
     http: reqwest::Client,
     secret_key: String,
     pub webhook_secret: String,
-    /// Platform fee in basis points (300 = 3%), kept by the platform on each payment.
-    fee_bps: i64,
     /// Public URL of the app, for redirects (e.g. https://pay.example.com).
     pub app_url: String,
     /// Refuse payments until the seller finished Stripe onboarding (recommended).
     pub require_connect: bool,
-}
-
-impl Payments {
-    pub fn from_env() -> Self {
-        let key = std::env::var("STRIPE_SECRET_KEY").unwrap_or_default();
-        if key.trim().is_empty() {
-            return Payments::Mock;
-        }
-        let webhook_secret = std::env::var("STRIPE_WEBHOOK_SECRET").unwrap_or_default();
-        if webhook_secret.is_empty() {
-            tracing::warn!("STRIPE_WEBHOOK_SECRET not set: payments will never be confirmed");
-        }
-        Payments::Stripe(Stripe {
-            http: reqwest::Client::new(),
-            secret_key: key.trim().to_string(),
-            webhook_secret,
-            fee_bps: std::env::var("PLATFORM_FEE_BPS").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
-            app_url: std::env::var("APP_URL").unwrap_or_else(|_| "http://localhost:5173".into()).trim_end_matches('/').to_string(),
-            require_connect: std::env::var("STRIPE_REQUIRE_CONNECT").map(|v| v != "false").unwrap_or(true),
-        })
-    }
-
-    pub fn mode(&self) -> &'static str {
-        match self {
-            Payments::Mock => "mock",
-            Payments::Stripe(_) => "stripe",
-        }
-    }
 }
 
 impl Stripe {
@@ -79,7 +118,7 @@ impl Stripe {
     }
 
     /// Stripe Checkout page for one link. Returns (session id, url).
-    pub async fn create_checkout(&self, link: &Link, payer: &Payer, destination: Option<&str>) -> Result<(String, String)> {
+    pub async fn create_checkout(&self, link: &Link, payer: &Payer, destination: Option<&str>, fee_cents: i64) -> Result<(String, String)> {
         let currency = link.currency.to_lowercase();
         let mut f: Vec<(String, String)> = vec![
             ("mode".into(), "payment".into()),
@@ -109,9 +148,8 @@ impl Stripe {
         if let Some(acct) = destination {
             // Destination charge: money goes to the seller, the platform keeps its fee.
             f.push(("payment_intent_data[transfer_data][destination]".into(), acct.to_string()));
-            let fee = link.total_cents * self.fee_bps / 10_000;
-            if fee > 0 {
-                f.push(("payment_intent_data[application_fee_amount]".into(), fee.to_string()));
+            if fee_cents > 0 {
+                f.push(("payment_intent_data[application_fee_amount]".into(), fee_cents.to_string()));
             }
         }
         let s = self.post("/checkout/sessions", &f, None).await?;
@@ -120,15 +158,18 @@ impl Stripe {
         Ok((id, url))
     }
 
-    /// Creates the seller's Stripe Express account.
-    pub async fn create_account(&self, email: &str, seller_id: &str) -> Result<String> {
-        let f = vec![
+    /// Creates the seller's Stripe Express account (country = ISO code, e.g. US).
+    pub async fn create_account(&self, email: &str, seller_id: &str, country: &str) -> Result<String> {
+        let mut f = vec![
             ("type".into(), "express".into()),
             ("email".into(), email.to_string()),
             ("metadata[seller_id]".into(), seller_id.to_string()),
             ("capabilities[card_payments][requested]".into(), "true".into()),
             ("capabilities[transfers][requested]".into(), "true".into()),
         ];
+        if country.len() == 2 {
+            f.push(("country".into(), country.to_uppercase()));
+        }
         let a = self.post("/accounts", &f, None).await?;
         a["id"].as_str().map(str::to_string).ok_or_else(|| anyhow!("no account id"))
     }
@@ -138,8 +179,8 @@ impl Stripe {
         let f = vec![
             ("account".into(), account.to_string()),
             ("type".into(), "account_onboarding".into()),
-            ("refresh_url".into(), format!("{}/settings?stripe=refresh", self.app_url)),
-            ("return_url".into(), format!("{}/settings?stripe=done", self.app_url)),
+            ("refresh_url".into(), format!("{}/settings?payments=refresh", self.app_url)),
+            ("return_url".into(), format!("{}/settings?payments=connected", self.app_url)),
         ];
         let l = self.post("/account_links", &f, None).await?;
         l["url"].as_str().map(str::to_string).ok_or_else(|| anyhow!("no onboarding url"))

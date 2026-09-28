@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Check, Info, KeyRound, LogOut, ShieldCheck, Wallet } from 'lucide-react'
+import { ArrowLeft, Check, Info, KeyRound, LogOut, ShieldCheck } from 'lucide-react'
 import { CURRENCIES, useApp } from '../lib/app'
-import { ApiError, auth } from '../lib/api'
+import { ApiError, auth, type ProfileInput } from '../lib/api'
+import { PayoutsCard } from '../components/PayoutsCard'
+import { ProfileFields } from '../components/ProfileFields'
+import { profileError } from '../lib/profile'
+import type { Strings } from '../i18n/strings'
 import { Button, Card, Input, Label, Spinner, Underline } from '../components/ui'
 import { LanguagePicker } from '../components/LanguagePicker'
 import { LANDING } from '../i18n/landing'
@@ -10,13 +14,16 @@ import { LANDING } from '../i18n/landing'
 export default function SettingsPage() {
   const { t, settings, update, toast, me, logout, signedIn } = useApp()
   const navigate = useNavigate()
-  const [business, setBusiness] = useState(settings.business)
-  const [params] = useSearchParams()
+  const [params, setParams] = useSearchParams()
 
-  // Back from Stripe onboarding: refresh the account to show the new status.
+  // Back from Stripe / Mercado Pago: refresh the account to show the new status.
   useEffect(() => {
-    if (params.get('stripe')) auth.me().then(signedIn).catch(() => {})
-  }, [params, signedIn])
+    const result = params.get('payments')
+    if (!result) return
+    auth.me().then(signedIn).catch(() => {})
+    if (result === 'error') toast(t('payoutsError'))
+    setParams({}, { replace: true })
+  }, [params, setParams, signedIn, toast, t])
 
   return (
     <div className="space-y-7 px-5 pb-10 pt-3">
@@ -28,11 +35,6 @@ export default function SettingsPage() {
       </h2>
 
       <Card className="space-y-6">
-        <label className="block">
-          <Label>{t('businessName')}</Label>
-          <Input value={business} onChange={(e) => setBusiness(e.target.value)} placeholder={t('onboardBusinessPh')} maxLength={60} />
-        </label>
-
         <div>
           <Label>{t('language')}</Label>
           <LanguagePicker value={settings.lang} onChange={(lang) => update({ lang })} />
@@ -57,21 +59,9 @@ export default function SettingsPage() {
         </div>
       </Card>
 
-      <Button
-        variant="accent"
-        size="lg"
-        block
-        icon={<Check strokeWidth={3} />}
-        onClick={() => {
-          update({ business: business.trim() })
-          toast(`✓ ${t('saved')}`)
-          navigate('/')
-        }}
-      >
-        {t('save')}
-      </Button>
+      <BusinessCard />
 
-      <PaymentsCard />
+      <PayoutsCard />
 
       <Card className="space-y-4">
         <h3 className="font-heading text-2xl font-bold">{t('accountTitle')}</h3>
@@ -100,45 +90,6 @@ export default function SettingsPage() {
         {LANDING[settings.lang].aboutApp}
       </Button>
     </div>
-  )
-}
-
-/** Where the seller's money goes: demo mode today, Stripe when the platform turns it on. */
-function PaymentsCard() {
-  const { t, me, server, toast } = useApp()
-  const [busy, setBusy] = useState(false)
-  const stripe = server.payments === 'stripe'
-  const ready = !!me?.stripe_charges_enabled
-
-  const connect = async () => {
-    setBusy(true)
-    try {
-      const { url } = await auth.stripeOnboard()
-      window.location.href = url
-    } catch {
-      toast(t('errorGeneric'))
-      setBusy(false)
-    }
-  }
-
-  return (
-    <Card tone="postit" tilt={-0.5} className="space-y-3">
-      <h3 className="flex items-center gap-2 font-heading text-2xl font-bold">
-        <Wallet strokeWidth={2.5} className="text-pen" /> {t('receivePayments')}
-      </h3>
-      {!stripe ? (
-        <p className="text-lg text-pencil/70">{t('demoMode')}</p>
-      ) : ready ? (
-        <p className="text-xl font-bold text-leaf">{t('stripeReady')}</p>
-      ) : (
-        <>
-          <p className="text-lg text-pencil/70">{t('stripePending')}</p>
-          <Button variant="accent" block disabled={busy} onClick={connect} icon={busy ? <Spinner className="border-white border-t-transparent" /> : undefined}>
-            {t('connectStripe')}
-          </Button>
-        </>
-      )}
-    </Card>
   )
 }
 
@@ -192,5 +143,56 @@ function PasswordForm() {
         {t('save')}
       </Button>
     </form>
+  )
+}
+
+/** Business details (same fields as sign-up). */
+function BusinessCard() {
+  const { t, me, toast, signedIn } = useApp()
+  const [p, setP] = useState<ProfileInput | null>(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (me && !p)
+      setP({
+        owner_name: me.owner_name,
+        phone: me.phone,
+        country: me.country || 'US',
+        business_name: me.business_name,
+        business_type: me.business_type || 'individual',
+        document: me.document,
+        category: me.category,
+        city: me.city,
+        state: me.state,
+      })
+  }, [me, p])
+
+  if (!p) return null
+
+  const save = async () => {
+    setError('')
+    const e = profileError(p)
+    if (e) return setError(t(e as keyof Strings))
+    setBusy(true)
+    try {
+      signedIn(await auth.updateProfile(p))
+      toast(`✓ ${t('saved')}`)
+    } catch (err) {
+      setError(err instanceof ApiError && err.message === 'invalid_document' ? t('errDocument') : t('errorGeneric'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card className="space-y-5">
+      <h3 className="font-heading text-2xl font-bold">{t('businessDetails')}</h3>
+      <ProfileFields part="all" value={p} onChange={setP} lockCountry={me?.payout_connected} />
+      {error && <p className="text-lg text-marker">{error}</p>}
+      <Button variant="accent" block disabled={busy} onClick={save} icon={busy ? <Spinner className="border-white border-t-transparent" /> : <Check strokeWidth={3} />}>
+        {t('save')}
+      </Button>
+    </Card>
   )
 }

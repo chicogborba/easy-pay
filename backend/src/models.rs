@@ -84,6 +84,12 @@ pub struct Link {
     /// themselves at checkout ("Pay as Ana · phone ending 5678") without exposing the number.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub known_customer: Option<KnownCustomer>,
+    /// Which provider processed it (mock, stripe, mercadopago) and what the platform kept.
+    pub provider: Option<String>,
+    pub platform_fee_cents: i64,
+    /// For the checkout page: how this link can be paid right now (mock, stripe, mercadopago).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

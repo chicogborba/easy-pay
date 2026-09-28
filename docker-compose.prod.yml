@@ -36,6 +36,16 @@ services:
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       PLATFORM_FEE_BPS: ${PLATFORM_FEE_BPS:-0}
+      # Brazil: Mercado Pago (see PAYMENTS.md)
+      MP_CLIENT_ID: ${MP_CLIENT_ID:-}
+      MP_CLIENT_SECRET: ${MP_CLIENT_SECRET:-}
+      MP_WEBHOOK_SECRET: ${MP_WEBHOOK_SECRET:-}
+      MP_SANDBOX: ${MP_SANDBOX:-false}
+      # Encrypts sellers' payment tokens at rest: set a long random value once and never change it.
+      SECRETS_KEY: ${SECRETS_KEY:-}
+      # Emails (verification, password reset) via resend.com; without a key they go to the logs.
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-Easy Pay <onboarding@resend.dev>}
       AI_REQUESTS_PER_MINUTE: ${AI_REQUESTS_PER_MINUTE:-30}
       DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-10}
 

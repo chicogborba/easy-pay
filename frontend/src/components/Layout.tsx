@@ -1,7 +1,7 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { MessageCirclePlus, PiggyBank, ReceiptText, Settings, Users } from 'lucide-react'
-import { api } from '../lib/api'
+import { api, auth } from '../lib/api'
 import { LANGS } from '../i18n/strings'
 import { useApp } from '../lib/app'
 import { cx } from './ui'
@@ -48,6 +48,8 @@ export function Layout() {
           <Settings strokeWidth={2.5} className="transition-transform duration-500 group-hover:rotate-90" />
         </button>
       </header>
+
+      <Nudges />
 
       <main className="relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
         {/* Re-keyed per screen so every navigation slides a fresh sheet of paper in. */}
@@ -132,4 +134,52 @@ function usePaymentWatcher() {
       clearInterval(id)
     }
   }, [t, fmt, toast])
+}
+
+/** One gentle reminder at a time: connect payouts first, then confirm the email. */
+function Nudges() {
+  const { t, me, server } = useApp()
+  const navigate = useNavigate()
+  const [hidden, setHidden] = useState(() => sessionStorage.getItem('ep.nudge') === '1')
+  const [sent, setSent] = useState(false)
+  if (!me || hidden) return null
+  const provider = me.payout_provider
+  // Accounts created before business details existed: finish the profile first.
+  if (!me.country)
+    return (
+      <div className="mx-4 mb-2 flex animate-pop items-center gap-2 rounded-wobblySm border-2 border-pencil bg-postit px-3 py-2 text-lg shadow-hardSm">
+        <button onClick={() => navigate('/settings')} className="flex-1 text-start">
+          📝 {t('businessDetails')} <span className="text-pen underline">→</span>
+        </button>
+      </div>
+    )
+  const needsPayouts = !!server.providers?.[provider] && !me.payout_connected
+  if (!needsPayouts && me.email_verified) return null
+  const dismiss = () => {
+    sessionStorage.setItem('ep.nudge', '1')
+    setHidden(true)
+  }
+  return (
+    <div className="mx-4 mb-2 flex animate-pop items-center gap-2 rounded-wobblySm border-2 border-pencil bg-postit px-3 py-2 text-lg shadow-hardSm">
+      {needsPayouts ? (
+        <button onClick={() => navigate('/settings')} className="flex-1 text-start">
+          💳 {t('payoutsBanner', { provider: provider === 'mercadopago' ? 'Mercado Pago' : 'Stripe' })} <span className="text-pen underline">→</span>
+        </button>
+      ) : (
+        <span className="flex-1">
+          ✉️ {t('verifyBanner')}{' '}
+          <button
+            disabled={sent}
+            onClick={() => auth.resendVerification().then(() => setSent(true)).catch(() => {})}
+            className="text-pen underline decoration-wavy underline-offset-4"
+          >
+            {sent ? t('sentBang') : t('resendBtn')}
+          </button>
+        </span>
+      )}
+      <button onClick={dismiss} aria-label={t('cancel')} className="shrink-0 px-1 font-heading text-xl font-bold text-pencil/50">
+        ✕
+      </button>
+    </div>
+  )
 }

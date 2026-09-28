@@ -22,7 +22,11 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 
-use crate::{db::now_ms, ApiError, ApiResult, AppState};
+use crate::{
+    db::now_ms,
+    profile::{currency_for_country, ProfileInput},
+    ApiError, ApiResult, AppState,
+};
 
 const COOKIE: &str = "ep_session";
 const SESSION_DAYS: i64 = 30;
@@ -42,13 +46,30 @@ pub struct Account {
     pub stripe_charges_enabled: bool,
     /// Platform owner (email listed in ADMIN_EMAILS).
     pub is_admin: bool,
+    // Profile
+    pub owner_name: String,
+    pub phone: String,
+    pub country: String,
+    pub business_type: String,
+    pub document: String,
+    pub category: String,
+    pub city: String,
+    pub state: String,
+    pub email_verified: bool,
+    /// Custom platform fee for this seller (basis points); None = platform default.
+    pub fee_bps_override: Option<i64>,
+    /// Which provider pays this seller out (by country) and whether they finished connecting it.
+    pub payout_provider: String,
+    pub payout_connected: bool,
 }
 
 const ACCOUNT_COLS: &str = "id, email, business_name, lang, currency, status, plan, created_at, \
-                            stripe_account_id, stripe_charges_enabled";
+                            stripe_account_id, stripe_charges_enabled, owner_name, phone, country, business_type, \
+                            document, category, city, state, email_verified_at, fee_bps_override, mp_user_id";
 
 fn row_to_account(r: &sqlx::postgres::PgRow) -> Result<Account, sqlx::Error> {
     let email: String = r.try_get("email")?;
+    let country: String = r.try_get("country")?;
     Ok(Account {
         id: r.try_get("id")?,
         is_admin: is_admin_email(&email),
@@ -61,6 +82,21 @@ fn row_to_account(r: &sqlx::postgres::PgRow) -> Result<Account, sqlx::Error> {
         created_at: r.try_get("created_at")?,
         stripe_account_id: r.try_get("stripe_account_id")?,
         stripe_charges_enabled: r.try_get("stripe_charges_enabled")?,
+        owner_name: r.try_get("owner_name")?,
+        phone: r.try_get("phone")?,
+        business_type: r.try_get("business_type")?,
+        document: r.try_get("document")?,
+        category: r.try_get("category")?,
+        city: r.try_get("city")?,
+        state: r.try_get("state")?,
+        email_verified: r.try_get::<Option<i64>, _>("email_verified_at")?.is_some(),
+        fee_bps_override: r.try_get("fee_bps_override")?,
+        payout_provider: crate::payments::provider_name(crate::payments::provider_for_country(&country)).into(),
+        payout_connected: match crate::payments::provider_for_country(&country) {
+            crate::payments::Provider::Stripe => r.try_get("stripe_charges_enabled")?,
+            crate::payments::Provider::MercadoPago => r.try_get::<Option<String>, _>("mp_user_id")?.is_some(),
+        },
+        country,
     })
 }
 
@@ -235,7 +271,10 @@ fn unauthorized() -> ApiError {
 pub struct RegisterRequest {
     email: String,
     password: String,
-    business_name: String,
+    #[serde(flatten)]
+    profile: ProfileInput,
+    #[serde(default)]
+    accept_terms: bool,
     #[serde(default)]
     lang: String,
     #[serde(default)]
@@ -269,15 +308,15 @@ pub async fn register(State(s): State<AppState>, headers: HeaderMap, Json(req): 
     if req.password.chars().count() < 8 || req.password.len() > 200 {
         return Err(ApiError(StatusCode::BAD_REQUEST, "password too short".into()));
     }
-    let business: String = req.business_name.trim().chars().take(60).collect();
-    if business.is_empty() {
-        return Err(ApiError(StatusCode::BAD_REQUEST, "business name required".into()));
+    let profile = req.profile.validate().map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.into()))?;
+    if !req.accept_terms {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "terms_required".into()));
     }
     if !s.signup_limiter.check(&client_ip(&headers)) {
         return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "too many attempts".into()));
     }
     let lang = if req.lang.len() == 2 { req.lang.to_lowercase() } else { "en".into() };
-    let currency = if req.currency.len() == 3 { req.currency.to_uppercase() } else { "USD".into() };
+    let currency = if req.currency.len() == 3 { req.currency.to_uppercase() } else { currency_for_country(&profile.country).into() };
 
     // Keep data created before accounts existed, if that id isn't taken.
     let claim = req.claim_id.trim();
@@ -292,16 +331,25 @@ pub async fn register(State(s): State<AppState>, headers: HeaderMap, Json(req): 
 
     let hash = hash_password(&req.password)?;
     let inserted = sqlx::query(
-        "INSERT INTO accounts (id, email, password_hash, business_name, lang, currency, created_at, last_seen_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $7) ON CONFLICT DO NOTHING",
+        "INSERT INTO accounts (id, email, password_hash, business_name, lang, currency, created_at, last_seen_at,
+                               owner_name, phone, country, business_type, document, category, city, state, terms_accepted_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, $13, $14, $15, $7) ON CONFLICT DO NOTHING",
     )
     .bind(&id)
     .bind(&email)
     .bind(hash)
-    .bind(&business)
+    .bind(&profile.business_name)
     .bind(&lang)
     .bind(&currency)
     .bind(now_ms())
+    .bind(&profile.owner_name)
+    .bind(&profile.phone)
+    .bind(&profile.country)
+    .bind(&profile.business_type)
+    .bind(&profile.document)
+    .bind(&profile.category)
+    .bind(&profile.city)
+    .bind(&profile.state)
     .execute(&s.db)
     .await
     .map_err(anyhow::Error::from)?;
@@ -309,6 +357,7 @@ pub async fn register(State(s): State<AppState>, headers: HeaderMap, Json(req): 
         return Err(ApiError(StatusCode::CONFLICT, "email already registered".into()));
     }
     crate::db::track(&s.db, &id, "signup");
+    send_verification(&s, &id, &email, &lang).await?;
     let token = create_session(&s.db, &id).await?;
     let account = account_by_id(&s.db, &id).await?.expect("just created");
     Ok(with_session(account, &token, &headers))
@@ -427,6 +476,143 @@ pub async fn change_password(
     Ok(Json(json!({ "ok": true })))
 }
 
+/* ---------------- profile ---------------- */
+
+/// Business details, editable in Settings (same validation as sign-up).
+pub async fn update_profile(
+    State(s): State<AppState>,
+    CurrentAccount(a): CurrentAccount,
+    Json(input): Json<ProfileInput>,
+) -> ApiResult<Account> {
+    let p = input.validate().map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.into()))?;
+    // Changing country would switch payout provider: only allowed before connecting payouts.
+    if p.country != a.country && a.payout_connected {
+        return Err(ApiError(StatusCode::CONFLICT, "disconnect_payouts_first".into()));
+    }
+    sqlx::query(
+        "UPDATE accounts SET owner_name = $2, phone = $3, country = $4, business_name = $5, business_type = $6,
+                             document = $7, category = $8, city = $9, state = $10 WHERE id = $1",
+    )
+    .bind(&a.id)
+    .bind(&p.owner_name)
+    .bind(&p.phone)
+    .bind(&p.country)
+    .bind(&p.business_name)
+    .bind(&p.business_type)
+    .bind(&p.document)
+    .bind(&p.category)
+    .bind(&p.city)
+    .bind(&p.state)
+    .execute(&s.db)
+    .await
+    .map_err(anyhow::Error::from)?;
+    Ok(Json(account_by_id(&s.db, &a.id).await?.expect("exists")))
+}
+
+/* ---------------- one-time tokens: verify email, reset password, OAuth state ---------------- */
+
+pub async fn create_one_time(pool: &PgPool, account_id: &str, kind: &str, ttl_ms: i64) -> Result<String> {
+    let token = new_token();
+    sqlx::query("INSERT INTO auth_tokens (token_hash, account_id, kind, expires_at) VALUES ($1, $2, $3, $4)")
+        .bind(token_hash(&token))
+        .bind(account_id)
+        .bind(kind)
+        .bind(now_ms() + ttl_ms)
+        .execute(pool)
+        .await?;
+    Ok(token)
+}
+
+/// Uses a token once. Returns the account id if it was valid, unused and not expired.
+pub async fn consume_one_time(pool: &PgPool, token: &str, kind: &str) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar(
+        "UPDATE auth_tokens SET used_at = $3 WHERE token_hash = $1 AND kind = $2 AND used_at IS NULL AND expires_at > $3
+         RETURNING account_id",
+    )
+    .bind(token_hash(token))
+    .bind(kind)
+    .bind(now_ms())
+    .fetch_optional(pool)
+    .await?)
+}
+
+async fn send_verification(s: &AppState, account_id: &str, email: &str, lang: &str) -> Result<()> {
+    let token = create_one_time(&s.db, account_id, "verify_email", 7 * DAY_MS).await?;
+    let (subject, body) = crate::email::verify_email(lang, &format!("{}/verify?token={token}", s.payments.app_url));
+    s.mailer.send(email, subject, &body);
+    Ok(())
+}
+
+pub async fn resend_verification(State(s): State<AppState>, CurrentAccount(a): CurrentAccount) -> ApiResult<serde_json::Value> {
+    if !a.email_verified {
+        send_verification(&s, &a.id, &a.email, &a.lang).await?;
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub struct TokenRequest {
+    token: String,
+    #[serde(default)]
+    password: String,
+}
+
+pub async fn verify_email(State(s): State<AppState>, Json(req): Json<TokenRequest>) -> ApiResult<serde_json::Value> {
+    let id = consume_one_time(&s.db, &req.token, "verify_email")
+        .await?
+        .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "invalid_or_expired".into()))?;
+    sqlx::query("UPDATE accounts SET email_verified_at = COALESCE(email_verified_at, $2) WHERE id = $1")
+        .bind(&id)
+        .bind(now_ms())
+        .execute(&s.db)
+        .await
+        .map_err(anyhow::Error::from)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub struct ForgotRequest {
+    email: String,
+}
+
+/// Always answers OK, so it can't be used to find out which emails have accounts.
+pub async fn forgot_password(State(s): State<AppState>, headers: HeaderMap, Json(req): Json<ForgotRequest>) -> ApiResult<serde_json::Value> {
+    let email = req.email.trim().to_lowercase();
+    if s.login_limiter.check(&format!("forgot|{}|{email}", client_ip(&headers))) {
+        let row: Option<(String, String)> = sqlx::query_as("SELECT id, lang FROM accounts WHERE email = $1 AND status = 'active'")
+            .bind(&email)
+            .fetch_optional(&s.db)
+            .await
+            .map_err(anyhow::Error::from)?;
+        if let Some((id, lang)) = row {
+            let token = create_one_time(&s.db, &id, "reset_password", 60 * 60_000).await?;
+            let (subject, body) = crate::email::reset_password(&lang, &format!("{}/reset?token={token}", s.payments.app_url));
+            s.mailer.send(&email, subject, &body);
+        }
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// New password from the emailed link; logs out every device.
+pub async fn reset_password(State(s): State<AppState>, Json(req): Json<TokenRequest>) -> ApiResult<serde_json::Value> {
+    if req.password.chars().count() < 8 || req.password.len() > 200 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "password too short".into()));
+    }
+    let id = consume_one_time(&s.db, &req.token, "reset_password")
+        .await?
+        .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "invalid_or_expired".into()))?;
+    // Resetting through the email also proves the address.
+    sqlx::query("UPDATE accounts SET password_hash = $2, email_verified_at = COALESCE(email_verified_at, $3) WHERE id = $1")
+        .bind(&id)
+        .bind(hash_password(&req.password)?)
+        .bind(now_ms())
+        .execute(&s.db)
+        .await
+        .map_err(anyhow::Error::from)?;
+    sqlx::query("DELETE FROM sessions WHERE account_id = $1").bind(&id).execute(&s.db).await.map_err(anyhow::Error::from)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// Best-effort client IP (behind Caddy/Heroku the first X-Forwarded-For entry).
 pub fn client_ip(headers: &HeaderMap) -> String {
     headers
@@ -470,5 +656,17 @@ mod tests {
         assert!(valid_email("ana@bakery.com"));
         assert!(!valid_email("ana@bakery"));
         assert!(!valid_email("ana bakery.com"));
+    }
+
+    #[tokio::test]
+    async fn one_time_tokens_work_once() {
+        let Ok(url) = std::env::var("TEST_DATABASE_URL") else { return };
+        let pool = crate::db::connect(&url).await.unwrap();
+        let t = create_one_time(&pool, "acct-x", "reset_password", 60_000).await.unwrap();
+        assert_eq!(consume_one_time(&pool, &t, "verify_email").await.unwrap(), None, "wrong kind");
+        assert_eq!(consume_one_time(&pool, &t, "reset_password").await.unwrap().as_deref(), Some("acct-x"));
+        assert_eq!(consume_one_time(&pool, &t, "reset_password").await.unwrap(), None, "used twice");
+        let expired = create_one_time(&pool, "acct-x", "reset_password", -1).await.unwrap();
+        assert_eq!(consume_one_time(&pool, &expired, "reset_password").await.unwrap(), None, "expired");
     }
 }

@@ -14,7 +14,8 @@ import ProductDetailPage from './pages/ProductDetailPage'
 import CustomersPage from './pages/CustomersPage'
 import CustomerDetailPage from './pages/CustomerDetailPage'
 import PayPage from './pages/PayPage'
-import AuthPage from './pages/AuthPage'
+import AuthPage, { ForgotPage, ResetPage, VerifyPage } from './pages/AuthPage'
+import LegalPage from './pages/LegalPage'
 import AdminPage from './pages/AdminPage'
 import { Spinner } from './components/ui'
 import LandingPage from './pages/LandingPage'
@@ -65,6 +66,11 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/login" element={<Guest mode="login" />} />
           <Route path="/onboarding" element={<Navigate to="/signup" replace />} />
           <Route path="/admin/*" element={<Admin />} />
+          <Route path="/forgot" element={<ForgotPage />} />
+          <Route path="/reset" element={<ResetPage />} />
+          <Route path="/verify" element={<VerifyPage />} />
+          <Route path="/terms" element={<LegalPage doc="terms" />} />
+          <Route path="/privacy" element={<LegalPage doc="privacy" />} />
           {/* Merchant app */}
           <Route element={<MerchantApp />}>
             <Route index element={<ChatPage />} />

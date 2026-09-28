@@ -35,7 +35,7 @@ const validPhone = (p: string) => {
 /** Public page the customer opens. Payment is MOCKED — see README to plug in Stripe. */
 export default function PayPage() {
   const { id = '' } = useParams()
-  const { t, fmt, settings, update, server } = useApp()
+  const { t, fmt, settings, update } = useApp()
   const [params] = useSearchParams()
   const returnedFromStripe = params.get('paid') === '1'
   const [redirecting, setRedirecting] = useState(false)
@@ -48,6 +48,8 @@ export default function PayPage() {
   // Link made for a known customer: they just confirm "it's me" instead of typing.
   const [knownChoice, setKnownChoice] = useState<'yes' | 'no' | null>(null)
   const known = link?.known_customer
+  // Real payments (Stripe / Mercado Pago) redirect to the provider; demo shows mock buttons.
+  const live = !!link?.payment_mode && link.payment_mode !== 'mock'
   const rememberedIsKnown = !!known && !!payer && payer.phone.replace(/\D/g, '').endsWith(known.phone_last4)
   const askKnown = !!known && knownChoice === null && !rememberedIsKnown
   const usingKnown = !!known && knownChoice === 'yes'
@@ -189,7 +191,7 @@ export default function PayPage() {
                     {t('change')}
                   </button>
                 </div>
-                {server.payments === 'stripe' ? (
+                {live ? (
                   returnedFromStripe ? (
                     <p className="flex items-center justify-center gap-3 py-4 text-2xl">
                       <Spinner /> {t('confirming')}
@@ -206,11 +208,17 @@ export default function PayPage() {
                       >
                         {redirecting ? t('redirecting') : t('payNow', { amount: fmt(link.total_cents, link.currency) })}
                       </Button>
-                      <div className="flex items-center justify-center gap-3 text-pencil/60" aria-hidden>
-                        <AppleLogo dark />
-                        <GoogleLogo />
-                        <CreditCard strokeWidth={2.5} />
-                      </div>
+                      {link.payment_mode === 'mercadopago' ? (
+                        <p className="flex items-center justify-center gap-2 text-lg text-pencil/60">
+                          <PixLogo /> {t('payMethodsMp')}
+                        </p>
+                      ) : (
+                        <p className="flex items-center justify-center gap-3 text-lg text-pencil/60">
+                          <AppleLogo dark />
+                          <GoogleLogo />
+                          <CreditCard strokeWidth={2.5} /> <span className="sr-only">{t('payMethodsStripe')}</span>
+                        </p>
+                      )}
                     </>
                   )
                 ) : (
@@ -249,7 +257,7 @@ export default function PayPage() {
 
           <footer className="mt-12 space-y-4 border-t-2 border-dashed border-pencil/30 pt-6">
             <LanguagePicker compact value={settings.lang} onChange={(lang) => update({ lang })} />
-            {server.payments !== 'stripe' && <p className="text-center text-base text-pencil/50">{t('demoNote')}</p>}
+            {!live && <p className="text-center text-base text-pencil/50">{t('demoNote')}</p>}
           </footer>
         </>
       )}
@@ -390,6 +398,14 @@ function GoogleLogo() {
       <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.55-2.75c-.98.66-2.24 1.06-3.73 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23z" />
       <path fill="#FBBC05" d="M5.84 14.12a6.6 6.6 0 0 1 0-4.24V7.04H2.18a11 11 0 0 0 0 9.92l3.66-2.84z" />
       <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15A10.5 10.5 0 0 0 12 1 11 11 0 0 0 2.18 7.04l3.66 2.84C6.71 7.31 9.14 5.38 12 5.38z" />
+    </svg>
+  )
+}
+
+function PixLogo() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-6 w-6" aria-hidden>
+      <path fill="#32BCAD" d="M17.9 17.6a2.6 2.6 0 0 1-1.9-.8l-2.7-2.7a.5.5 0 0 0-.7 0l-2.7 2.7a2.6 2.6 0 0 1-1.9.8h-.5l3.4 3.4a2.8 2.8 0 0 0 3.9 0l3.4-3.4zM8 6.4a2.6 2.6 0 0 1 1.9.8l2.7 2.7a.5.5 0 0 0 .7 0l2.7-2.7a2.6 2.6 0 0 1 1.9-.8h.4L14.9 3a2.8 2.8 0 0 0-3.9 0L7.6 6.4zm13.2 3.7-2-2a.4.4 0 0 1-.2 0h-1a1.8 1.8 0 0 0-1.3.6l-2.7 2.7a1.3 1.3 0 0 1-1.8 0L9.5 8.7a1.8 1.8 0 0 0-1.3-.5H7a.4.4 0 0 1-.1 0l-2.1 2a2.8 2.8 0 0 0 0 3.9l2 2.1h1.3a1.8 1.8 0 0 0 1.3-.6l2.7-2.7a1.3 1.3 0 0 1 1.8 0l2.7 2.7a1.8 1.8 0 0 0 1.3.6h1l.2-.1 2-2a2.8 2.8 0 0 0 0-3.9z" />
     </svg>
   )
 }
